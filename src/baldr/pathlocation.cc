@@ -5,13 +5,13 @@ namespace valhalla {
 namespace baldr {
 
 PathLocation::PathEdge::PathEdge(const GraphId& id,
-                                 const float dist,
+                                 const double percent_along,
                                  const midgard::PointLL& projected,
-                                 const float score,
+                                 const double score,
                                  const SideOfStreet sos,
                                  const unsigned int outbound_reach,
                                  const unsigned int inbound_reach)
-    : id(id), percent_along(dist), projected(projected), sos(sos), distance(score),
+    : id(id), percent_along(percent_along), projected(projected), sos(sos), distance(score),
       outbound_reach(outbound_reach), inbound_reach(inbound_reach) {
 }
 bool PathLocation::PathEdge::begin_node() const {
@@ -47,8 +47,8 @@ bool PathLocation::shares_edges(const PathLocation& other) const {
     bool found = false;
     for (const auto& other_edge : other.edges) {
       if (edge.id == other_edge.id && edge.sos == other_edge.sos &&
-          midgard::equal<float>(edge.percent_along, other_edge.percent_along) &&
-          midgard::equal<float>(edge.distance, other_edge.distance, .1f) &&
+          midgard::equal<double>(edge.percent_along, other_edge.percent_along) &&
+          midgard::equal<double>(edge.distance, other_edge.distance, .1) &&
           edge.projected.ApproximatelyEqual(other_edge.projected)) {
         found = true;
         break;

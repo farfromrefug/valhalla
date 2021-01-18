@@ -24,23 +24,22 @@
 #include "sif/costconstants.h"
 #include "sif/dynamiccost.h"
 #include "sif/pedestriancost.h"
-#include "thor/astar.h"
 #include "thor/attributes_controller.h"
 #include "thor/bidirectional_astar.h"
 #include "thor/pathalgorithm.h"
 #include "thor/timedep.h"
 #include "thor/triplegbuilder.h"
 #include "thor/worker.h"
+#include "tyr/actor.h"
 #include "tyr/serializers.h"
 
-#include "gurka/gurka.h"
+#include "gurka.h"
 
-#include <valhalla/proto/directions.pb.h>
-#include <valhalla/proto/options.pb.h>
-#include <valhalla/proto/trip.pb.h>
+#include "proto/directions.pb.h"
+#include "proto/options.pb.h"
+#include "proto/trip.pb.h"
 
 #include <boost/algorithm/string/join.hpp>
-#include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/property_tree/ptree.hpp>
 
@@ -58,6 +57,7 @@ namespace vt = valhalla::thor;
 namespace vk = valhalla::loki;
 namespace vj = valhalla::mjolnir;
 namespace vo = valhalla::odin;
+namespace vr = valhalla::tyr;
 
 #include "mjolnir/directededgebuilder.h"
 #include "mjolnir/graphtilebuilder.h"
@@ -130,7 +130,7 @@ const gurka::relations relations3 = {{{gurka::relation_member{gurka::way_member,
 const std::string test_dir = "test/data/fake_tiles_astar";
 const vb::GraphId tile_id = vb::TileHierarchy::GetGraphId({.125, .125}, 2);
 
-std::unordered_map<std::string, vm::PointLL> node_locations;
+gurka::nodelayout node_locations;
 
 const std::string config_file = "test/test_trivial_path";
 
@@ -142,6 +142,7 @@ void write_config(const std::string& filename,
     file << "{ \
       \"mjolnir\": { \
       \"concurrency\": 1, \
+      \"id_table_size\": 1000, \
        \"tile_dir\": \"" +
                 tile_dir + "\", \
         \"admin\": \"" VALHALLA_SOURCE_DIR "test/data/netherlands_admin.sqlite\", \
@@ -154,10 +155,10 @@ void write_config(const std::string& filename,
 
 void make_tile() {
 
-  if (boost::filesystem::exists(test_dir))
-    boost::filesystem::remove_all(test_dir);
+  if (filesystem::exists(test_dir))
+    filesystem::remove_all(test_dir);
 
-  boost::filesystem::create_directories(test_dir);
+  filesystem::create_directories(test_dir);
 
   boost::property_tree::ptree conf;
   write_config(config_file, test_dir);
@@ -219,34 +220,20 @@ void make_tile() {
     tile_builder.UpdatePredictedSpeeds(directededges);
   }
 
-  GraphTile tile(test_dir, tile_id);
-  ASSERT_EQ(tile.FileSuffix(tile_id, false), std::string("2/000/519/120.gph"))
+  auto tile = GraphTile::Create(test_dir, tile_id);
+  ASSERT_TRUE(tile);
+  ASSERT_EQ(tile->FileSuffix(tile_id), std::string("2/000/519/120.gph"))
       << "Tile ID didn't match the expected filename";
 
-  ASSERT_PRED1(filesystem::exists, test_dir + "/" + tile.FileSuffix(tile_id, false))
+  ASSERT_PRED1(filesystem::exists,
+               test_dir + filesystem::path::preferred_separator + tile->FileSuffix(tile_id))
       << "Expected tile file didn't show up on disk - are the fixtures in the right location?";
 }
 
-void create_costing_options(Options& options) {
+void create_costing_options(Options& options, Costing costing) {
   const rapidjson::Document doc;
-  sif::ParseAutoCostOptions(doc, "/costing_options/auto", options.add_costing_options());
-  sif::ParseAutoShorterCostOptions(doc, "/costing_options/auto_shorter",
-                                   options.add_costing_options());
-  sif::ParseBicycleCostOptions(doc, "/costing_options/bicycle", options.add_costing_options());
-  sif::ParseBusCostOptions(doc, "/costing_options/bus", options.add_costing_options());
-  sif::ParseHOVCostOptions(doc, "/costing_options/hov", options.add_costing_options());
-  sif::ParseTaxiCostOptions(doc, "/costing_options/taxi", options.add_costing_options());
-  sif::ParseMotorScooterCostOptions(doc, "/costing_options/motor_scooter",
-                                    options.add_costing_options());
-  sif::ParsePedestrianCostOptions(doc, "/costing_options/pedestrian", options.add_costing_options());
-  sif::ParseTransitCostOptions(doc, "/costing_options/transit", options.add_costing_options());
-  sif::ParseTruckCostOptions(doc, "/costing_options/truck", options.add_costing_options());
-  sif::ParseMotorcycleCostOptions(doc, "/costing_options/motorcycle", options.add_costing_options());
-  sif::ParseAutoShorterCostOptions(doc, "/costing_options/auto_shorter",
-                                   options.add_costing_options());
-  sif::ParseAutoDataFixCostOptions(doc, "/costing_options/auto_data_fix",
-                                   options.add_costing_options());
-  options.add_costing_options();
+  sif::ParseCostingOptions(doc, "/costing_options", options);
+  options.set_costing(costing);
 }
 
 enum class TrivialPathTest {
@@ -262,14 +249,14 @@ std::unique_ptr<vb::GraphReader> get_graph_reader(const std::string& tile_dir) {
   rapidjson::read_json(json, conf);
 
   std::unique_ptr<vb::GraphReader> reader(new vb::GraphReader(conf));
-  auto* tile = reader->GetGraphTile(tile_id);
+  auto tile = reader->GetGraphTile(tile_id);
 
   EXPECT_NE(tile, nullptr) << "Unable to load test tile! Did `make_tile` run succesfully?";
   if (tile->header()->directededgecount() != 28) {
     throw std::logic_error("test-tiles does not contain expected number of edges");
   }
 
-  const GraphTile* endtile = reader->GetGraphTile(node_locations["b"]);
+  auto endtile = reader->GetGraphTile(node_locations["b"]);
   EXPECT_NE(endtile, nullptr) << "bad tile, node 'b' wasn't found in it";
 
   return reader;
@@ -287,37 +274,23 @@ void assert_is_trivial_path(vt::PathAlgorithm& astar,
   auto reader = get_graph_reader(test_dir);
 
   Options options;
-  create_costing_options(options);
-  vs::cost_ptr_t costs[int(vs::TravelMode::kMaxTravelMode)];
+  auto costing = mode == vs::TravelMode::kPedestrian ? Costing::pedestrian : Costing::auto_;
+  create_costing_options(options, costing);
+  auto mode_costing = sif::CostFactory().CreateModeCosting(options, mode);
+  ASSERT_TRUE(bool(mode_costing[int(mode)]));
 
-  switch (mode) {
-    case vs::TravelMode::kPedestrian: {
-      auto pedestrian = vs::CreatePedestrianCost(Costing::pedestrian, options);
-      costs[int(mode)] = pedestrian;
-      break;
-    }
-    case vs::TravelMode::kDrive: {
-      auto car = vs::CreateAutoCost(Costing::auto_, options);
-      costs[int(mode)] = car;
-      break;
-    }
-    default:
-      FAIL() << "unhandled mode " << static_cast<int>(mode);
-  }
-  ASSERT_TRUE(bool(costs[int(mode)]));
-
-  auto paths = astar.GetBestPath(origin, dest, *reader, costs, mode);
+  auto paths = astar.GetBestPath(origin, dest, *reader, mode_costing, mode);
 
   int32_t time = 0;
   for (const auto& path : paths) {
     for (const auto& p : path) {
-      time += p.elapsed_time;
+      time += p.elapsed_cost.secs;
     }
     EXPECT_EQ(path.size(), expected_num_paths);
     break;
   }
 
-  auto* tile = reader->GetGraphTile(tile_id);
+  auto tile = reader->GetGraphTile(tile_id);
   uint32_t expected_time = 979797;
   switch (assert_type) {
     case TrivialPathTest::DurationEqualTo:
@@ -327,7 +300,7 @@ void assert_is_trivial_path(vt::PathAlgorithm& astar,
     case TrivialPathTest::MatchesEdge:
       // Grab time from an edge index
       const DirectedEdge* expected_edge = tile->directededge(assert_type_value);
-      auto expected_cost = costs[int(mode)]->EdgeCost(expected_edge, tile);
+      auto expected_cost = mode_costing[int(mode)]->EdgeCost(expected_edge, tile);
       expected_time = expected_cost.secs;
       break;
   };
@@ -340,8 +313,9 @@ void assert_is_trivial_path(vt::PathAlgorithm& astar,
 void TestTrivialPath(vt::PathAlgorithm& astar) {
 
   Options options;
-  create_costing_options(options);
-  auto costs = vs::CreateAutoCost(Costing::auto_, options);
+  create_costing_options(options, Costing::auto_);
+  sif::TravelMode mode;
+  auto mode_costing = sif::CostFactory().CreateModeCosting(options, mode);
 
   auto reader = get_graph_reader(test_dir);
 
@@ -349,7 +323,7 @@ void TestTrivialPath(vt::PathAlgorithm& astar) {
   locations.push_back({node_locations["1"]});
   locations.push_back({node_locations["2"]});
 
-  const auto projections = loki::Search(locations, *reader, costs);
+  const auto projections = loki::Search(locations, *reader, mode_costing[static_cast<size_t>(mode)]);
   valhalla::Location origin;
   {
     const auto& correlated = projections.at(locations[0]);
@@ -383,8 +357,9 @@ TEST(Astar, TestTrivialPathReverse) {
 TEST(Astar, TestTrivialPathTriangle) {
 
   Options options;
-  create_costing_options(options);
-  auto costs = vs::CreatePedestrianCost(Costing::pedestrian, options);
+  create_costing_options(options, Costing::pedestrian);
+  vs::TravelMode mode;
+  auto costs = vs::CostFactory().CreateModeCosting(options, mode);
 
   auto reader = get_graph_reader(test_dir);
 
@@ -392,7 +367,7 @@ TEST(Astar, TestTrivialPathTriangle) {
   locations.push_back({node_locations["4"]});
   locations.push_back({node_locations["5"]});
 
-  const auto projections = loki::Search(locations, *reader, costs);
+  const auto projections = loki::Search(locations, *reader, costs[static_cast<size_t>(mode)]);
   valhalla::Location origin;
   {
     const auto& correlated = projections.at(locations[0]);
@@ -407,7 +382,7 @@ TEST(Astar, TestTrivialPathTriangle) {
   // TODO This fails with graphindex out of bounds for Reverse direction, is this
   // related to why we short-circuit trivial routes to AStarPathAlgorithm in route_action.cc?
   //
-  vt::AStarPathAlgorithm astar;
+  vt::TimeDepForward astar;
   // this should go along the path from E to F
   assert_is_trivial_path(astar, origin, dest, 1, TrivialPathTest::DurationEqualTo, 4231,
                          vs::TravelMode::kPedestrian);
@@ -417,10 +392,9 @@ void TestPartialDuration(vt::PathAlgorithm& astar) {
   // Tests that a partial duration is returned when starting on a partial edge
 
   Options options;
-  create_costing_options(options);
-  vs::cost_ptr_t costs[int(vs::TravelMode::kMaxTravelMode)];
-  auto mode = vs::TravelMode::kDrive;
-  costs[int(mode)] = vs::CreateAutoCost(Costing::auto_, options);
+  create_costing_options(options, Costing::auto_);
+  vs::TravelMode mode;
+  auto costs = vs::CostFactory().CreateModeCosting(options, mode);
 
   auto reader = get_graph_reader(test_dir);
 
@@ -428,7 +402,7 @@ void TestPartialDuration(vt::PathAlgorithm& astar) {
   locations.push_back({node_locations["1"]});
   locations.push_back({node_locations["3"]});
 
-  auto projections = loki::Search(locations, *reader, costs[int(mode)]);
+  auto projections = loki::Search(locations, *reader, costs[static_cast<size_t>(mode)]);
   valhalla::Location origin;
   {
     auto& correlated = projections.at(locations[0]);
@@ -476,6 +450,7 @@ boost::property_tree::ptree get_conf(const char* tiles) {
           "search_cutoff": 35000,
           "node_snap_tolerance": 5,
           "street_side_tolerance": 5,
+          "street_side_max_distance": 1000,
           "heading_tolerance": 60
         }
       },
@@ -502,7 +477,7 @@ boost::property_tree::ptree get_conf(const char* tiles) {
         "bicycle": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50},
         "bus": {"max_distance": 5000000.0,"max_locations": 50,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
         "hov": {"max_distance": 5000000.0,"max_locations": 20,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
-        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time": 120},
+        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time_contour": 120, "max_distance_contour":200},
         "max_avoid_locations": 50,"max_radius": 200,"max_reachability": 100,"max_alternates":2,
         "multimodal": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 0.0,"max_matrix_locations": 0},
         "pedestrian": {"max_distance": 250000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50,"max_transit_walking_distance": 10000,"min_transit_walking_distance": 1},
@@ -518,54 +493,13 @@ boost::property_tree::ptree get_conf(const char* tiles) {
 }
 
 TEST(Astar, TestTrivialPathNoUturns) {
-  boost::property_tree::ptree conf;
-  conf.put("tile_dir", "test/data/utrecht_tiles");
-  // setup and purge
-  vb::GraphReader graph_reader(conf);
-
-  // Locations
-  std::vector<valhalla::baldr::Location> locations;
-  baldr::Location origin(valhalla::midgard::PointLL(5.114587f, 52.095957f),
-                         baldr::Location::StopType::BREAK);
-  locations.push_back(origin);
-  baldr::Location dest(valhalla::midgard::PointLL(5.114506f, 52.096141f),
-                       baldr::Location::StopType::BREAK);
-  locations.push_back(dest);
-
-  Api api;
-  auto& options = *api.mutable_options();
-  create_costing_options(options);
-  std::shared_ptr<vs::DynamicCost> mode_costing[4];
-  std::shared_ptr<vs::DynamicCost> cost = vs::CreatePedestrianCost(Costing::pedestrian, options);
-  auto mode = cost->travel_mode();
-  mode_costing[static_cast<uint32_t>(mode)] = cost;
-
-  const auto projections = vk::Search(locations, graph_reader, cost);
-  std::vector<PathLocation> path_location;
-
-  for (const auto& loc : locations) {
-    ASSERT_NO_THROW(
-        path_location.push_back(projections.at(loc));
-        PathLocation::toPBF(path_location.back(), options.mutable_locations()->Add(), graph_reader);)
-        << "fail_invalid_origin";
-  }
-
-  vt::AStarPathAlgorithm astar;
-  auto path = astar
-                  .GetBestPath(*options.mutable_locations(0), *options.mutable_locations(1),
-                               graph_reader, mode_costing, mode)
-                  .front();
-
-  vt::AttributesController controller;
-  auto& leg = *api.mutable_trip()->mutable_routes()->Add()->mutable_legs()->Add();
-  vt::TripLegBuilder::Build(controller, graph_reader, mode_costing, path.begin(), path.end(),
-                            *options.mutable_locations(0), *options.mutable_locations(1),
-                            std::list<valhalla::Location>{}, leg);
-  // really could of got the total of the elapsed_time.
-  odin::DirectionsBuilder::Build(api);
-  const auto& trip_directions = api.directions().routes(0).legs(0);
-
-  EXPECT_EQ(trip_directions.summary().time(), 0);
+  boost::property_tree::ptree conf = gurka::detail::build_config("test/data/utrecht_tiles", {});
+  vr::actor_t actor(conf);
+  valhalla::Api api;
+  actor.route(
+      R"({"costing":"pedestrian","locations":[{"lon":5.114587,"lat":52.095957},{"lon":5.114506,"lat":52.096141}]})",
+      {}, &api);
+  EXPECT_EQ(api.directions().routes(0).legs(0).summary().time(), 0);
 }
 
 struct route_tester {
@@ -621,7 +555,7 @@ TEST(Astar, test_oneway) {
     }
   }
 
-  auto correct_route = std::vector<std::string>{"Quay Street", "Nelson Street", ""};
+  auto correct_route = std::vector<std::string>{"Quay Street", ""};
   EXPECT_EQ(names, correct_route) << "Incorrect route, got: \n" +
                                          boost::algorithm::join(names, ", ") + ", expected: \n" +
                                          boost::algorithm::join(correct_route, ", ");
@@ -683,9 +617,9 @@ TEST(Astar, test_deadend) {
   }
 
   auto correct_route =
-      std::vector<std::string>{"Bell Lane",   "Small Street",
+      std::vector<std::string>{"Bell Lane", "Small Street",
                                "Quay Street", // The u-turn on Quay Street is optimized away
-                               "Quay Street", "Small Street", "", ""};
+                               "", ""};
   EXPECT_EQ(names, correct_route) << "Incorrect route, got: \n" +
                                          boost::algorithm::join(names, ", ") + ", expected: \n" +
                                          boost::algorithm::join(correct_route, ", ");
@@ -732,9 +666,9 @@ TEST(Astar, test_time_dep_forward_with_current_time) {
   }
 
   auto correct_route =
-      std::vector<std::string>{"Bell Lane",   "Small Street",
+      std::vector<std::string>{"Bell Lane", "Small Street",
                                "Quay Street", // The u-turn on Quay Street is optimized away
-                               "Quay Street", "Small Street", "", ""};
+                               "", ""};
   EXPECT_EQ(names, correct_route) << "Incorrect route, got: \n" +
                                          boost::algorithm::join(names, ", ") + ", expected: \n" +
                                          boost::algorithm::join(correct_route, ", ");
@@ -784,9 +718,9 @@ TEST(Astar, test_deadend_timedep_forward) {
   }
 
   auto correct_route =
-      std::vector<std::string>{"Bell Lane",   "Small Street",
+      std::vector<std::string>{"Bell Lane", "Small Street",
                                "Quay Street", // The u-turn on Quay Street is optimized away
-                               "Quay Street", "Small Street", "", ""};
+                               "", ""};
   EXPECT_EQ(names, correct_route) << "Incorrect route, got: \n" +
                                          boost::algorithm::join(names, ", ") + ", expected: \n" +
                                          boost::algorithm::join(correct_route, ", ");
@@ -837,9 +771,9 @@ TEST(Astar, test_deadend_timedep_reverse) {
   }
 
   auto correct_route =
-      std::vector<std::string>{"Bell Lane",   "Small Street",
+      std::vector<std::string>{"Bell Lane", "Small Street",
                                "Quay Street", // The u-turn on Quay Street is optimized away
-                               "Quay Street", "Small Street", "", ""};
+                               "", ""};
   EXPECT_EQ(names, correct_route) << "Incorrect route, got: \n" +
                                          boost::algorithm::join(names, ", ") + ", expected: \n" +
                                          boost::algorithm::join(correct_route, ", ");
@@ -1084,19 +1018,17 @@ void test_backtrack_complex_restriction(int date_time_type) {
     case 0:
     case 1:
       correct_shape =
-          "iggmAa{abeEyD~HaBvCn@^`e@tYdGhCr]nRnCzArDjB{CbFsDyBwC{AsYsP_LcGqA{@wJsGeU{Km@]qFgDz@{A";
+          R"(kggmA_{abeEyDbIaBtCp@Z|d@pYfGdCp]xRnCzArDlB{C`FqDyBwC_BsYmP}KoGsAw@wJmGcUcLo@[qFaDz@aB)";
       break;
     case 2:
       correct_shape =
-          R"(qrgmA_habeE}@xBqFgDkB{@_WiNiB{@mXwNqJcFcIeFeViL}Z_JoVeE\cFw@kBb@NxQdEzb@zKfIvDb`@|Sh\rQ`YdOdB|@tCeF)";
+          R"(wrgmAsgabeEy@hBqFaDkBcA_WcNkBw@iX_OuJ}EcIgFcVgL}ZgJoVeE^yEy@uBb@PvQfE|b@bLdIpDd`@|Sh\vQ~XxNfB~@pC}E)";
       break;
     default:
       throw std::runtime_error("unhandled case");
   }
-  if (leg.shape() != correct_shape) {
-    throw std::runtime_error("Did not find expected shape. Found \n" + leg.shape() +
-                             "\nbut expected \n" + correct_shape);
-  }
+  EXPECT_EQ(leg.shape(), correct_shape)
+      << "Did not find expected shape. Found \n" + leg.shape() + "\nbut expected \n" + correct_shape;
 
   std::vector<std::string> names;
   const auto& directions = response.directions().routes(0).legs();
@@ -1142,10 +1074,9 @@ TEST(Astar, TestBacktrackComplexRestrictionForwardDetourAfterRestriction) {
   // the complex restriction
 
   Options options;
-  create_costing_options(options);
-  vs::cost_ptr_t costs[int(vs::TravelMode::kMaxTravelMode)];
-  auto mode = vs::TravelMode::kDrive;
-  costs[int(mode)] = vs::CreateAutoCost(Costing::auto_, options);
+  create_costing_options(options, Costing::auto_);
+  vs::TravelMode mode;
+  auto costs = vs::CostFactory().CreateModeCosting(options, mode);
   ASSERT_TRUE(bool(costs[int(mode)]));
 
   auto reader = get_graph_reader(test_dir);
@@ -1390,11 +1321,9 @@ TEST(Astar, test_complex_restriction_short_path_fake) {
 
   auto reader = get_graph_reader(test_dir);
   Options options;
-  create_costing_options(options);
-  vs::cost_ptr_t costs[int(vs::TravelMode::kMaxTravelMode)];
-
-  auto mode = vs::TravelMode::kDrive;
-  costs[int(mode)] = vs::CreateAutoCost(Costing::auto_, options);
+  create_costing_options(options, Costing::auto_);
+  vs::TravelMode mode;
+  auto costs = vs::CostFactory().CreateModeCosting(options, mode);
   ASSERT_TRUE(bool(costs[int(mode)]));
 
   std::vector<valhalla::baldr::Location> locations;
@@ -1481,7 +1410,7 @@ TEST(Astar, test_complex_restriction_short_path_melborne) {
         R"({"locations":[{"lat":-37.627860699397075,"lon":145.365825588286},{"lat":-37.62842169939707,"lon":145.36587158828598}],"costing":"auto"})";
     auto response = tester.test(request);
     const auto& leg = response.trip().routes(0).legs(0);
-    EXPECT_EQ(leg.shape(), "b|rwfAislgtGtN{UvDtDxLhM");
+    EXPECT_EQ(leg.shape(), "~{rwfAmslgtGxNkUvDtDtLjM");
   }
   {
     // Tests "X-crossing",
@@ -1490,7 +1419,7 @@ TEST(Astar, test_complex_restriction_short_path_melborne) {
         R"({"locations":[{"lat":-37.62403769939707,"lon":145.360320588286},{"lat":-37.624804699397075,"lon":145.36041758828597}],"costing":"auto"})";
     auto response = tester.test(request);
     const auto& leg = response.trip().routes(0).legs(0);
-    EXPECT_EQ(leg.shape(), "tmkwfAa{agtGjAyBpBwC`HkK`M]bR`R");
+    EXPECT_EQ(leg.shape(), "rmkwfAwzagtGlAgCnB}CfHcKzLk@lPbQ");
   }
 }
 
@@ -1500,8 +1429,9 @@ TEST(Astar, test_IsBridgingEdgeRestricted) {
   // a specific setup
   auto reader = get_graph_reader(test_dir);
   Options options;
-  create_costing_options(options);
-  auto costing = vs::CreateAutoCost(Costing::auto_, options);
+  create_costing_options(options, Costing::auto_);
+  vs::TravelMode mode;
+  auto costs = vs::CostFactory().CreateModeCosting(options, mode);
   std::vector<sif::BDEdgeLabel> edge_labels_fwd;
   std::vector<sif::BDEdgeLabel> edge_labels_rev;
 
@@ -1557,7 +1487,7 @@ TEST(Astar, test_IsBridgingEdgeRestricted) {
   {
     // Test for forward search
     ASSERT_TRUE(vt::IsBridgingEdgeRestricted(*reader, edge_labels_fwd, edge_labels_rev, fwd_pred,
-                                             rev_pred, costing));
+                                             rev_pred, costs[int(mode)]));
   }
 }
 
@@ -1569,11 +1499,13 @@ TEST(ComplexRestriction, WalkVias) {
   // tiles programmatically
   auto reader = get_graph_reader(test_dir);
   Options options;
-  create_costing_options(options);
-  auto costing = vs::CreateAutoCost(Costing::auto_, options);
+  create_costing_options(options, Costing::auto_);
+  vs::TravelMode mode;
+  auto costs = vs::CostFactory().CreateModeCosting(options, mode);
+  auto costing = costs[int(mode)];
 
   bool is_forward = true;
-  auto* tile = reader->GetGraphTile(tile_id);
+  auto tile = reader->GetGraphTile(tile_id);
 
   std::vector<valhalla::baldr::Location> locations;
   locations.push_back({node_locations["7"]});
@@ -1646,6 +1578,7 @@ TEST(Astar, BiDirTrivial) {
   // Get access to tiles
   boost::property_tree::ptree conf;
   conf.put("tile_dir", "test/data/utrecht_tiles");
+  conf.put<unsigned long>("mjolnir.id_table_size", 1000);
   vb::GraphReader graph_reader(conf);
 
   // Locations
@@ -1658,12 +1591,11 @@ TEST(Astar, BiDirTrivial) {
   locations.push_back(dest);
 
   // Costing
-  valhalla::Options options;
-  create_costing_options(options);
-  std::shared_ptr<vs::DynamicCost> mode_costing[4];
-  std::shared_ptr<vs::DynamicCost> cost = vs::CreateAutoCost(Costing::auto_, options);
-  auto mode = cost->travel_mode();
-  mode_costing[static_cast<uint32_t>(mode)] = cost;
+  Options options;
+  create_costing_options(options, Costing::auto_);
+  vs::TravelMode mode;
+  auto mode_costing = vs::CostFactory().CreateModeCosting(options, mode);
+  auto cost = mode_costing[int(mode)];
 
   // Loki
   const auto projections = vk::Search(locations, graph_reader, cost);
@@ -1682,8 +1614,8 @@ TEST(Astar, BiDirTrivial) {
                   .front();
 
   ASSERT_TRUE(path.size() == 1);
-  EXPECT_LT(path.front().elapsed_cost, 1);
-  EXPECT_LT(path.front().elapsed_time, 1);
+  EXPECT_LT(path.front().elapsed_cost.cost, 1);
+  EXPECT_LT(path.front().elapsed_cost.secs, 1);
 }
 
 class AstarTestEnv : public ::testing::Environment {

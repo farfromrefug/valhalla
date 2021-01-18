@@ -65,9 +65,9 @@ void DirectedEdge::set_endnode(const GraphId& endnode) {
 
 // Sets the free flow speed in KPH.
 void DirectedEdge::set_free_flow_speed(const uint32_t speed) {
-  if (speed > kMaxSpeedKph) {
+  if (speed > kMaxAssumedSpeed) {
     LOG_WARN("Exceeding maximum.  Free flow speed: " + std::to_string(speed));
-    free_flow_speed_ = kMaxSpeedKph;
+    free_flow_speed_ = kMaxAssumedSpeed;
   } else {
     free_flow_speed_ = speed;
   }
@@ -75,9 +75,9 @@ void DirectedEdge::set_free_flow_speed(const uint32_t speed) {
 
 // Sets the constrained flow speed in KPH.
 void DirectedEdge::set_constrained_flow_speed(const uint32_t speed) {
-  if (speed > kMaxSpeedKph) {
+  if (speed > kMaxAssumedSpeed) {
     LOG_WARN("Exceeding maximum.  Constrained flow speed: " + std::to_string(speed));
-    constrained_flow_speed_ = kMaxSpeedKph;
+    constrained_flow_speed_ = kMaxAssumedSpeed;
   } else {
     constrained_flow_speed_ = speed;
   }
@@ -114,8 +114,13 @@ void DirectedEdge::set_sign(const bool exit) {
 // ------------------------- Geographic attributes ------------------------- //
 
 // Sets the length of the edge in meters.
-void DirectedEdge::set_length(const uint32_t length) {
+void DirectedEdge::set_length(const uint32_t length, bool should_error) {
   if (length > kMaxEdgeLength) {
+    if (should_error) {
+      // Consider this a catastrophic error.
+      LOG_ERROR("Exceeding max. edge length: " + std::to_string(length));
+      throw std::runtime_error("DirectedEdgeBuilder: exceeded maximum edge length");
+    }
     LOG_WARN("Exceeding max. edge length: " + std::to_string(length));
     length_ = kMaxEdgeLength;
   } else {
@@ -313,9 +318,9 @@ void DirectedEdge::set_reverseaccess(const uint32_t modes) {
 
 // Sets the average speed in KPH.
 void DirectedEdge::set_speed(const uint32_t speed) {
-  if (speed > kMaxSpeedKph) {
+  if (speed > kMaxAssumedSpeed) {
     LOG_WARN("Exceeding maximum.  Average speed: " + std::to_string(speed));
-    speed_ = kMaxSpeedKph;
+    speed_ = kMaxAssumedSpeed;
   } else {
     speed_ = speed;
   }
@@ -323,9 +328,9 @@ void DirectedEdge::set_speed(const uint32_t speed) {
 
 // Sets the truck speed in KPH.
 void DirectedEdge::set_truck_speed(const uint32_t speed) {
-  if (speed > kMaxSpeedKph) {
+  if (speed > kMaxAssumedSpeed) {
     LOG_WARN("Exceeding maximum.  Truck speed: " + std::to_string(speed));
-    truck_speed_ = kMaxSpeedKph;
+    truck_speed_ = kMaxAssumedSpeed;
   } else {
     truck_speed_ = speed;
   }
@@ -502,6 +507,8 @@ void DirectedEdge::set_shortcut(const uint32_t shortcut) {
 void DirectedEdge::set_superseded(const uint32_t superseded) {
   if (superseded > kMaxShortcutsFromNode) {
     LOG_WARN("Exceeding max shortcut edges from a node: " + std::to_string(superseded));
+  } else if (superseded == 0) {
+    superseded_ = 0;
   } else {
     superseded_ = (1 << (superseded - 1));
   }

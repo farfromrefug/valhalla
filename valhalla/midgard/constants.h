@@ -21,11 +21,12 @@ constexpr uint32_t kSecondsPerWeek = 604800;
 
 // Distance constants
 constexpr float kFeetPerMile = 5280.0f;
+constexpr float kMilePerFoot = 1.0f / kFeetPerMile;
 constexpr float kFeetPerMeter = 3.2808399f;
 constexpr float kMetersPerKm = 1000.0f;
 constexpr float kKmPerMeter = 0.001f;
 constexpr float kMilePerKm = 0.621371f;
-constexpr float kKmPerMile = 1.60934f;
+constexpr float kKmPerMile = 1.609344f;
 constexpr float kRadEarthMeters = 6378160.187f;
 constexpr float kMetersPerDegreeLat = 110567.0f;
 constexpr double kKmPerDecimeter = 0.0001;
@@ -35,6 +36,8 @@ constexpr double kDecimeterPerMeter = 10;
 // Speed conversion constants
 constexpr float kMPHtoMetersPerSec = 0.44704f;
 constexpr double kDecimeterPerSectoKPH = 0.36; // dm/s to km/h
+constexpr double kKPHtoMetersPerSec = 1000. / 3600.;
+constexpr double kMetersPerSectoKPH = 3600. / 1000.;
 
 // Angular measures
 constexpr float kPi = 3.14159265f;

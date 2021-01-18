@@ -76,9 +76,18 @@ function(valhalla_module)
   set(library valhalla-${MODULE_NAME})
   add_library(${library} OBJECT ${MODULE_SOURCES} ${MODULE_HEADERS})
   add_library(valhalla::${MODULE_NAME} ALIAS ${library})
+  set_target_properties(${library} PROPERTIES FOLDER "Modules")
+
+  # Generate source groups so the files are properly sorted in IDEs like Xcode.
+  create_source_groups("Header Files" ${MODULE_HEADERS})
+  create_source_groups("Source Files" ${MODULE_SOURCES})
+
   target_compile_definitions(${library}
     PUBLIC
-      $<$<BOOL:${MSVC}>:VC_EXTRALEAN;WIN32_LEAN_AND_MEAN;NOMINMAX;NOGDI>
+      # ERROR macro clashes with windows.h -> NOGDI necessary (e.g. https://github.com/ipkn/crow/issues/87)
+      # However, NOGDI needs to be undefined in logging.h
+      $<$<BOOL:${WIN32}>:NOGDI;WIN32_LEAN_AND_MEAN>
+      $<$<BOOL:${MSVC}>:NOMINMAX>
       RAPIDJSON_HAS_STDSTRING
       HAS_REMOTE_API=0
       AUTO_DOWNLOAD=0
@@ -92,6 +101,13 @@ function(valhalla_module)
   if(ENABLE_COVERAGE)
     target_compile_options(${library} PUBLIC -ftest-coverage -fprofile-arcs)
   endif()
+
+  # On more modern x86 processors that support SSE2, specifying the compiler options -mfpmath=sse -msse2
+  # ensures all float and double operations are performed in SSE registers and correctly rounded.
+  # These options do not affect the ABI and should therefore be used whenever possible for
+  # predictable numerical results
+  # For the x86-64 compiler, these extensions are enabled by default.
+  target_add_compile_flags_if_supported(${library} PRIVATE -mfpmath=sse -msse2)
 
   if(ENABLE_COMPILER_WARNINGS)
     cxx_add_warning_flags(${library})
@@ -124,6 +140,8 @@ function(valhalla_module)
   set(libvalhalla_link_libraries "${libvalhalla_link_libraries};${external_module_depends}" CACHE INTERNAL "")
 endfunction()
 
+add_subdirectory(${VALHALLA_SOURCE_DIR}/third_party/robin-hood-hashing ${CMAKE_BINARY_DIR}/third_party/robin-hood-hashing)
+
 add_subdirectory(../proto ${CMAKE_CURRENT_BINARY_DIR}/valhalla/proto)
 add_subdirectory(baldr)
 add_subdirectory(loki)
@@ -146,14 +164,22 @@ set(valhalla_hdrs
     ${CMAKE_CURRENT_BINARY_DIR}/valhalla/valhalla.h
     ${VALHALLA_SOURCE_DIR}/valhalla/worker.h
     ${VALHALLA_SOURCE_DIR}/valhalla/filesystem.h
+    ${VALHALLA_SOURCE_DIR}/valhalla/proto_conversions.h
     )
 
 set(valhalla_src
     worker.cc
     filesystem.cc
+    proto_conversions.cc
     ${CMAKE_CURRENT_BINARY_DIR}/valhalla/config.h
     ${valhalla_hdrs}
     ${libvalhalla_link_objects})
+
+if (UNIX)
+  # Enables stricter compiler checks on a file-by-file basis
+  # which allows us to migrate piecemeal
+  set_source_files_properties(proto_conversions.cc PROPERTIES COMPILE_FLAGS "-Wall -Werror")
+endif (UNIX)
 
 if (ENABLE_SERVICES)
   set(valhalla_hdrs ${valhalla_hdrs} ${VALHALLA_SOURCE_DIR}/valhalla/tile_server.h)
@@ -161,10 +187,13 @@ if (ENABLE_SERVICES)
 endif()
 
 add_library(valhalla ${valhalla_src})
+set_target_properties(valhalla PROPERTIES FOLDER "Library")
+create_source_groups("Source Files" ${valhalla_src})
 
 target_compile_definitions(valhalla
   PUBLIC
-    $<$<BOOL:${MSVC}>:VC_EXTRALEAN;WIN32_LEAN_AND_MEAN;NOMINMAX;NOGDI>
+    $<$<BOOL:${WIN32}>:NOGDI;WIN32_LEAN_AND_MEAN>
+    $<$<BOOL:${MSVC}>:NOMINMAX>
     RAPIDJSON_HAS_STDSTRING  # this is a part of the workaround for OBJECT libraries,
                              # because ${libvalhalla_compile_definitions} must be private.
                              # To be removed with ${libvalhalla_compile_definitions} below
@@ -187,7 +216,7 @@ target_include_directories(valhalla
     ${VALHALLA_BINARY_DIR}/valhalla  # TODO: this path must be removed and changed to #include <valhalla/...> in headers
     ${VALHALLA_SOURCE_DIR}/third_party/rapidjson/include
     ${VALHALLA_SOURCE_DIR}/third_party/date/include
-    $<$<BOOL:${MSVC}>:${VALHALLA_SOURCE_DIR}/third_party/dirent/include>
+    $<$<BOOL:${WIN32}>:${VALHALLA_SOURCE_DIR}/third_party/dirent/include>
   PRIVATE
     ${libvalhalla_include_directories})
 
@@ -216,6 +245,7 @@ else()
   if(UNIX)
     add_custom_target(${LIBVALHALLA_SO_LINK} ALL
       COMMAND ${CMAKE_COMMAND} -E create_symlink "${LIBVALHALLA_SO_LINK}.${VALHALLA_VERSION_MAJOR}" ${LIBVALHALLA_SO_LINK})
+    set_target_properties(${LIBVALHALLA_SO_LINK} PROPERTIES FOLDER "Library")
   endif()
 endif()
 
@@ -238,6 +268,7 @@ if(PKG_CONFIG_FOUND)
   add_executable(libvalhalla.pc EXCLUDE_FROM_ALL ../libvalhalla.pc.in)
   target_link_libraries(libvalhalla.pc valhalla)
   set_target_properties(libvalhalla.pc PROPERTIES LINKER_LANGUAGE PkgConfig)
+  set_target_properties(libvalhalla.pc PROPERTIES FOLDER "Library")
   install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target libvalhalla.pc OUTPUT_QUIET ERROR_VARIABLE _err RESULT_VARIABLE _res)
   if(NOT \${_res} EQUAL 0)
     message(FATAL_ERROR \"Configuring libvalhalla.pc failed: \${_err}\")

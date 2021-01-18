@@ -6,14 +6,14 @@
 #include <unordered_map>
 #include <vector>
 
-#include "baldr/json.h"
 #include "midgard/constants.h"
 #include "midgard/logging.h"
-#include <boost/property_tree/ptree.hpp>
-
+#include "midgard/util.h"
 #include "thor/isochrone.h"
 #include "thor/worker.h"
 #include "tyr/actor.h"
+
+#include <boost/property_tree/ptree.hpp>
 
 using namespace valhalla;
 using namespace valhalla::tyr;
@@ -43,7 +43,7 @@ const std::unordered_map<std::string, float> kMaxDistances = {
     {"bicycle", 7200.0f},        {"bus", 43200.0f},           {"hov", 43200.0f},
     {"motor_scooter", 14400.0f}, {"motorcycle", 14400.0f},    {"multimodal", 7200.0f},
     {"pedestrian", 7200.0f},     {"transit", 14400.0f},       {"truck", 43200.0f},
-    {"taxi", 43200.0f},
+    {"taxi", 43200.0f},          {"bikeshare", 7200.0f},
 };
 // a scale factor to apply to the score so that we bias towards closer results more
 constexpr float kDistanceScale = 10.f;
@@ -57,14 +57,10 @@ namespace thor {
 thor_worker_t::thor_worker_t(const boost::property_tree::ptree& config,
                              const std::shared_ptr<baldr::GraphReader>& graph_reader)
     : mode(valhalla::sif::TravelMode::kPedestrian), matcher_factory(config, graph_reader),
-      reader(graph_reader), controller{},
-      long_request(config.get<float>("thor.logging.long_request")) {
+      reader(graph_reader), controller{} {
   // If we weren't provided with a graph reader make our own
   if (!reader)
     reader = matcher_factory.graphreader();
-
-  // Register standard edge/node costing methods
-  factory.RegisterStandardCostingModels();
 
   // Select the matrix algorithm based on the conf file (defaults to
   // select_optimal if not present)
@@ -96,23 +92,38 @@ thor_worker_t::thor_worker_t(const boost::property_tree::ptree& config,
 thor_worker_t::~thor_worker_t() {
 }
 
+std::string serialize_to_pbf(Api& request) {
+  std::string buf;
+  if (!request.SerializeToString(&buf)) {
+    LOG_ERROR("Failed serializing to pbf in Thor::Worker - trace_route");
+    throw valhalla_exception_t{401, boost::optional<std::string>(
+                                        "Failed serializing to pbf in Thor::Worker")};
+  }
+  return buf;
+};
+
 #ifdef HAVE_HTTP
 prime_server::worker_t::result_t
 thor_worker_t::work(const std::list<zmq::message_t>& job,
                     void* request_info,
                     const std::function<void()>& interrupt_function) {
-  // get time for start of request
-  auto s = std::chrono::system_clock::now();
+
+  // get request info
   auto& info = *static_cast<prime_server::http_request_info_t*>(request_info);
   LOG_INFO("Got Thor Request " + std::to_string(info.id));
   Api request;
   try {
     // crack open the original request
-    request.ParseFromArray(job.front().data(), job.front().size());
+    bool success = request.ParseFromArray(job.front().data(), job.front().size());
+    if (!success) {
+      LOG_ERROR("Failed parsing pbf in Thor::Worker");
+      throw valhalla_exception_t{401,
+                                 boost::optional<std::string>("Failed parsing pbf in Thor::Worker")};
+    }
     const auto& options = request.options();
 
     // Set the interrupt function
-    service_worker_t::set_interrupt(interrupt_function);
+    service_worker_t::set_interrupt(&interrupt_function);
 
     prime_server::worker_t::result_t result{true};
     double denominator = 0;
@@ -124,7 +135,7 @@ thor_worker_t::work(const std::list<zmq::message_t>& job,
         break;
       case Options::optimized_route: {
         optimized_route(request);
-        result.messages.emplace_back(request.SerializeAsString());
+        result.messages.emplace_back(serialize_to_pbf(request));
         denominator = std::max(options.sources_size(), options.targets_size());
         break;
       }
@@ -134,13 +145,13 @@ thor_worker_t::work(const std::list<zmq::message_t>& job,
         break;
       case Options::route: {
         route(request);
-        result.messages.emplace_back(request.SerializeAsString());
+        result.messages.emplace_back(serialize_to_pbf(request));
         denominator = options.locations_size();
         break;
       }
       case Options::trace_route: {
         trace_route(request);
-        result.messages.emplace_back(request.SerializeAsString());
+        result.messages.emplace_back(serialize_to_pbf(request));
         denominator = trace.size() / 1100;
         break;
       }
@@ -156,25 +167,12 @@ thor_worker_t::work(const std::list<zmq::message_t>& job,
       default:
         throw valhalla_exception_t{400}; // this should never happen
     }
-
-    double elapsed_time =
-        std::chrono::duration<float, std::milli>(std::chrono::system_clock::now() - s).count();
-    if (!options.do_not_track() && elapsed_time / denominator > long_request) {
-      LOG_WARN("thor::" + Options_Action_Enum_Name(options.action()) +
-               " request elapsed time (ms)::" + std::to_string(elapsed_time));
-      LOG_WARN("thor::" + Options_Action_Enum_Name(options.action()) +
-               " request exceeded threshold::" + std::to_string(info.id));
-      midgard::logging::Log("valhalla_thor_long_request_" +
-                                Options_Action_Enum_Name(options.action()),
-                            " [ANALYTICS] ");
-    }
-
     return result;
   } catch (const valhalla_exception_t& e) {
-    valhalla::midgard::logging::Log("400::" + std::string(e.what()), " [ANALYTICS] ");
+    LOG_WARN("400::" + std::string(e.what()) + " request_id=" + std::to_string(info.id));
     return jsonify_error(e, info, request);
   } catch (const std::exception& e) {
-    valhalla::midgard::logging::Log("400::" + std::string(e.what()), " [ANALYTICS] ");
+    LOG_ERROR("400::" + std::string(e.what()) + " request_id=" + std::to_string(info.id));
     return jsonify_error({499, std::string(e.what())}, info, request);
   }
 }
@@ -208,23 +206,7 @@ std::string thor_worker_t::parse_costing(const Api& request) {
   const auto& options = request.options();
   auto costing = options.costing();
   auto costing_str = Costing_Enum_Name(costing);
-
-  // Set travel mode and construct costing
-  if (costing == Costing::multimodal || costing == Costing::transit) {
-    // For multi-modal we construct costing for all modes and set the
-    // initial mode to pedestrian. (TODO - allow other initial modes)
-    mode_costing[0] = factory.Create(Costing::auto_, options);
-    mode_costing[1] = factory.Create(Costing::pedestrian, options);
-    mode_costing[2] = factory.Create(Costing::bicycle, options);
-    mode_costing[3] = factory.Create(Costing::transit, options);
-    mode = valhalla::sif::TravelMode::kPedestrian;
-  } else {
-    valhalla::sif::cost_ptr_t cost = factory.Create(options);
-    mode = cost->travel_mode();
-    mode_costing[static_cast<uint32_t>(mode)] = cost;
-  }
-  valhalla::midgard::logging::Log("travel_mode::" + std::to_string(static_cast<uint32_t>(mode)),
-                                  " [ANALYTICS] ");
+  mode_costing = factory.CreateModeCosting(options, mode);
   return costing_str;
 }
 
@@ -274,13 +256,16 @@ void thor_worker_t::parse_measurements(const Api& request) {
 
   // we require locations
   try {
-    auto default_accuracy = matcher->config().get<float>("gps_accuracy");
-    auto default_radius = matcher->config().get<float>("search_radius");
+    const auto& config = matcher->config();
     for (const auto& pt : options.shape()) {
-      trace.emplace_back(meili::Measurement{{pt.ll().lng(), pt.ll().lat()},
-                                            pt.has_accuracy() ? pt.accuracy() : default_accuracy,
-                                            pt.has_radius() ? pt.radius() : default_radius,
-                                            pt.time()});
+      trace.emplace_back(
+          meili::Measurement{{pt.ll().lng(), pt.ll().lat()},
+                             pt.has_accuracy() ? pt.accuracy()
+                                               : config.emission_cost.gps_accuracy_meters,
+                             pt.has_radius() ? pt.radius()
+                                             : config.candidate_search.search_radius_meters,
+                             pt.time(),
+                             PathLocation::fromPBF(pt.type())});
     }
   } catch (...) { throw valhalla_exception_t{424}; }
 }
@@ -288,7 +273,6 @@ void thor_worker_t::parse_measurements(const Api& request) {
 void thor_worker_t::log_admin(const valhalla::TripLeg& trip_path) {
   std::unordered_set<std::string> state_iso;
   std::unordered_set<std::string> country_iso;
-  std::stringstream s_ss, c_ss;
   if (trip_path.admin_size() > 0) {
     for (const auto& admin : trip_path.admin()) {
       if (admin.has_state_code()) {
@@ -297,18 +281,6 @@ void thor_worker_t::log_admin(const valhalla::TripLeg& trip_path) {
       if (admin.has_country_code()) {
         country_iso.insert(admin.country_code());
       }
-    }
-    for (const std::string& x : state_iso) {
-      s_ss << " " << x;
-    }
-    for (const std::string& x : country_iso) {
-      c_ss << " " << x;
-    }
-    if (!s_ss.eof()) {
-      valhalla::midgard::logging::Log("admin_state_iso::" + s_ss.str() + ' ', " [ANALYTICS] ");
-    }
-    if (!c_ss.eof()) {
-      valhalla::midgard::logging::Log("admin_country_iso::" + c_ss.str() + ' ', " [ANALYTICS] ");
     }
   }
 }
@@ -348,11 +320,11 @@ void thor_worker_t::parse_filter_attributes(const Api& request, bool is_strict_f
 }
 
 void thor_worker_t::cleanup() {
-  astar.Clear();
   bidir_astar.Clear();
   timedep_forward.Clear();
   timedep_reverse.Clear();
   multi_modal_astar.Clear();
+  bss_astar.Clear();
   trace.clear();
   isochrone_gen.Clear();
   matcher_factory.ClearFullCache();
@@ -361,5 +333,9 @@ void thor_worker_t::cleanup() {
   }
 }
 
+void thor_worker_t::set_interrupt(const std::function<void()>* interrupt_function) {
+  interrupt = interrupt_function;
+  reader->SetInterrupt(interrupt);
+}
 } // namespace thor
 } // namespace valhalla

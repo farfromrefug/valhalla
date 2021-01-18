@@ -1,15 +1,12 @@
 #include <bitset>
-#include <fstream>
-#include <iostream>
+#include <ctime>
 #include <regex>
 #include <sstream>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/classification.hpp>
-#include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/range/algorithm/remove_if.hpp>
 
-#include "baldr/datetime.h"
 #include "baldr/graphconstants.h"
 #include "baldr/timedomain.h"
 #include "midgard/logging.h"
@@ -23,7 +20,8 @@ namespace mjolnir {
 
 std::vector<std::string> GetTokens(const std::string& tag_value, char delim) {
   std::vector<std::string> tokens;
-  boost::algorithm::split(tokens, tag_value, std::bind1st(std::equal_to<char>(), delim),
+  boost::algorithm::split(tokens, tag_value,
+                          std::bind(std::equal_to<char>(), delim, std::placeholders::_1),
                           boost::algorithm::token_compress_on);
   return tokens;
 }

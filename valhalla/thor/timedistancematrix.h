@@ -11,10 +11,9 @@
 #include <valhalla/baldr/double_bucket_queue.h>
 #include <valhalla/baldr/graphid.h>
 #include <valhalla/baldr/graphreader.h>
-#include <valhalla/baldr/pathlocation.h>
 #include <valhalla/sif/dynamiccost.h>
 #include <valhalla/sif/edgelabel.h>
-#include <valhalla/thor/astar.h>
+#include <valhalla/thor/astarheuristic.h>
 #include <valhalla/thor/costmatrix.h>
 #include <valhalla/thor/edgestatus.h>
 #include <valhalla/thor/pathalgorithm.h>
@@ -73,7 +72,7 @@ public:
   OneToMany(const valhalla::Location& origin,
             const google::protobuf::RepeatedPtrField<valhalla::Location>& locations,
             baldr::GraphReader& graphreader,
-            const std::shared_ptr<sif::DynamicCost>* mode_costing,
+            const sif::mode_costing_t& mode_costing,
             const sif::TravelMode mode,
             const float max_matrix_distance);
 
@@ -92,7 +91,7 @@ public:
   ManyToOne(const valhalla::Location& dest,
             const google::protobuf::RepeatedPtrField<valhalla::Location>& locations,
             baldr::GraphReader& graphreader,
-            const std::shared_ptr<sif::DynamicCost>* mode_costing,
+            const sif::mode_costing_t& mode_costing,
             const sif::TravelMode mode,
             const float max_matrix_distance);
 
@@ -109,7 +108,7 @@ public:
   std::vector<TimeDistance>
   ManyToMany(const google::protobuf::RepeatedPtrField<valhalla::Location>& locations,
              baldr::GraphReader& graphreader,
-             const std::shared_ptr<sif::DynamicCost>* mode_costing,
+             const sif::mode_costing_t& mode_costing,
              const sif::TravelMode mode,
              const float max_matrix_distance);
 
@@ -128,7 +127,7 @@ public:
   SourceToTarget(const google::protobuf::RepeatedPtrField<valhalla::Location>& source_location_list,
                  const google::protobuf::RepeatedPtrField<valhalla::Location>& target_location_list,
                  baldr::GraphReader& graphreader,
-                 const std::shared_ptr<sif::DynamicCost>* mode_costing,
+                 const sif::mode_costing_t& mode_costing,
                  const sif::TravelMode mode,
                  const float max_matrix_distance);
 
@@ -160,7 +159,7 @@ protected:
   std::vector<sif::EdgeLabel> edgelabels_;
 
   // Adjacency list - approximate double bucket sort
-  std::shared_ptr<baldr::DoubleBucketQueue> adjacencylist_;
+  std::shared_ptr<baldr::DoubleBucketQueue<sif::EdgeLabel>> adjacencylist_;
 
   // Edge status. Mark edges that are in adjacency list or settled.
   EdgeStatus edgestatus_;
@@ -258,7 +257,7 @@ protected:
                           const google::protobuf::RepeatedPtrField<valhalla::Location>& locations,
                           std::vector<uint32_t>& destinations,
                           const baldr::DirectedEdge* edge,
-                          const baldr::GraphTile* tile,
+                          const graph_tile_ptr& tile,
                           const sif::EdgeLabel& pred,
                           const uint32_t predindex);
 

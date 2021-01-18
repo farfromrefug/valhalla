@@ -44,6 +44,8 @@ public:
   std::string height(Api& request);
   std::string transit_available(Api& request);
 
+  void set_interrupt(const std::function<void()>* interrupt) override;
+
 protected:
   void parse_locations(
       google::protobuf::RepeatedPtrField<valhalla::Location>* locations,
@@ -61,10 +63,11 @@ protected:
   void init_transit_available(Api& request);
 
   boost::property_tree::ptree config;
-  sif::CostFactory<sif::DynamicCost> factory;
+  sif::CostFactory factory;
   sif::cost_ptr_t costing;
   std::shared_ptr<baldr::GraphReader> reader;
   std::shared_ptr<baldr::connectivity_map_t> connectivity_map;
+  std::unordered_set<Options::Action> actions;
   std::string action_str;
   std::unordered_map<std::string, size_t> max_locations;
   std::unordered_map<std::string, float> max_distance;
@@ -79,12 +82,14 @@ protected:
   unsigned int default_node_snap_tolerance;
   unsigned int default_search_cutoff;
   unsigned int default_street_side_tolerance;
-  float long_request;
+  unsigned int default_street_side_max_distance;
+  float default_breakage_distance;
   // Minimum and maximum walking distances (to validate input).
   size_t min_transit_walking_dis;
   size_t max_transit_walking_dis;
   size_t max_contours;
-  size_t max_time;
+  size_t max_contour_min;
+  size_t max_contour_km;
   size_t max_trace_shape;
   float max_gps_accuracy;
   float max_search_radius;

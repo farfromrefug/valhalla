@@ -77,7 +77,7 @@ const tz_db_t& get_tz_db() {
 }
 
 // get a formatted date.  date in the format of 2016-11-06T01:00 or 2016-11-06
-date::local_seconds get_formatted_date(const std::string& date) {
+date::local_seconds get_formatted_date(const std::string& date, bool can_throw) {
   std::istringstream in{date};
   date::local_seconds tp;
 
@@ -85,6 +85,12 @@ date::local_seconds get_formatted_date(const std::string& date) {
     in >> date::parse("%FT%R", tp);
   else if (date.find('-') != std::string::npos)
     in >> date::parse("%F", tp);
+  else
+    in.setstate(std::ios::failbit);
+
+  // we weren't able to use this string as a date and you'd like to know about it
+  if (can_throw && in.fail())
+    throw std::invalid_argument("Date string is invalid: " + date);
 
   return tp;
 }
@@ -99,7 +105,7 @@ date::zoned_seconds get_ldt(const date::local_seconds& d, const date::time_zone*
   return zt;
 }
 
-// Get the number of days that have elapsed from the pivot date for the inputed date.
+// Get the number of days that have elapsed from the pivot date for the input date.
 // date_time is in the format of 2015-05-06T08:00
 uint32_t days_from_pivot_date(const date::local_seconds& date_time) {
   if (date_time <= pivot_date_) {
@@ -133,7 +139,7 @@ uint64_t seconds_since_epoch(const std::string& date_time, const date::time_zone
 int timezone_diff(const uint64_t seconds,
                   const date::time_zone* origin_tz,
                   const date::time_zone* dest_tz,
-                  std::unordered_map<const date::time_zone*, std::vector<date::sys_info>>* cache) {
+                  tz_sys_info_cache_t* cache) {
 
   if (!origin_tz || !dest_tz || origin_tz == dest_tz) {
     return 0;
@@ -463,9 +469,11 @@ bool is_conditional_active(const bool type,
     }
 
     // Time does not matter here; we are only dealing with dates.
-    auto b_in_local_time = date::make_zoned(time_zone, date::local_days(begin_date));
-    auto local_dt = date::make_zoned(time_zone, date::local_days(d));
-    auto e_in_local_time = date::make_zoned(time_zone, date::local_days(end_date));
+    auto b_in_local_time =
+        date::make_zoned(time_zone, date::local_days(begin_date), date::choose::latest);
+    auto local_dt = date::make_zoned(time_zone, date::local_days(d), date::choose::latest);
+    auto e_in_local_time =
+        date::make_zoned(time_zone, date::local_days(end_date), date::choose::latest);
 
     if (edge_case) {
 
@@ -476,11 +484,13 @@ bool is_conditional_active(const bool type,
       // end date = Jan 02, 2021
       date::year_month_day new_ed =
           date::year_month_day(date::year(b_year), date::month(12), date::day(31));
-      auto new_e_in_local_time = date::make_zoned(time_zone, date::local_days(new_ed));
+      auto new_e_in_local_time =
+          date::make_zoned(time_zone, date::local_days(new_ed), date::choose::latest);
 
       date::year_month_day new_bd =
           date::year_month_day(date::year(b_year), date::month(1), date::day(1));
-      auto new_b_in_local_time = date::make_zoned(time_zone, date::local_days(new_bd));
+      auto new_b_in_local_time =
+          date::make_zoned(time_zone, date::local_days(new_bd), date::choose::latest);
 
       // we need to check Jan 04, 2021 to Dec 31, 2021 and Jan 01, 2021 to Jan 02, 2021
       dt_in_range = (((b_in_local_time.get_local_time() <= local_dt.get_local_time() &&

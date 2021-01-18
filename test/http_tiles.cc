@@ -1,31 +1,23 @@
 #include "test.h"
 
+#include "baldr/curl_tilegetter.h"
 #include "baldr/graphtile.h"
-#include "baldr/rapidjson_utils.h"
-#include "baldr/tilegetter.h"
 #include "tyr/actor.h"
 #include "valhalla/filesystem.h"
 #include "valhalla/tile_server.h"
 
 #include <prime_server/prime_server.hpp>
 
-#include <boost/property_tree/ptree.hpp>
-
 #include <ostream>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <unordered_set>
+#include <vector>
 
 using namespace valhalla;
 
 zmq::context_t context;
-
-boost::property_tree::ptree json_to_pt(const std::string& json) {
-  std::stringstream ss;
-  ss << json;
-  boost::property_tree::ptree pt;
-  rapidjson::read_json(ss, pt);
-  return pt;
-}
 
 std::string get_tile_url() {
   std::ostringstream oss;
@@ -38,14 +30,14 @@ std::string get_tile_url() {
 boost::property_tree::ptree
 make_conf(const std::string& tile_dir, bool tile_url_gz, size_t curler_count) {
   // fake up config against pine grove traffic extract
-  auto conf = json_to_pt(R"({
+  auto conf = test::json_to_pt(R"({
       "mjolnir":{
         "user_agent":"MapboxNavigationNative"
       },
       "loki":{
         "actions":["locate","route","sources_to_targets","optimized_route","isochrone","trace_route","trace_attributes","transit_available"],
         "logging":{"long_request": 100},
-        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "heading_tolerance": 60}
+        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "street_side_max_distance": 1000, "heading_tolerance": 60}
       },
       "thor":{"logging":{"long_request": 110}},
       "skadi":{"actons":["height"],"logging":{"long_request": 5}},
@@ -61,7 +53,7 @@ make_conf(const std::string& tile_dir, bool tile_url_gz, size_t curler_count) {
         "bus": {"max_distance": 5000000.0,"max_locations": 50,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
         "hov": {"max_distance": 5000000.0,"max_locations": 20,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
         "taxi": {"max_distance": 5000000.0,"max_locations": 20,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
-        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time": 120},
+        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time_contour": 120, "max_distance_contour":200},
         "max_avoid_locations": 50,"max_radius": 200,"max_reachability": 100,"max_alternates":2,
         "multimodal": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 0.0,"max_matrix_locations": 0},
         "pedestrian": {"max_distance": 250000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50,"max_transit_walking_distance": 10000,"min_transit_walking_distance": 1},
@@ -93,7 +85,7 @@ void test_route(const std::string& tile_dir, bool tile_url_gz) {
   auto route_json = actor.route(R"({"locations":[{"lat":52.09620,"lon": 5.11909,"type":"break"},
           {"lat":52.09585,"lon":5.11934,"type":"break"}],"costing":"auto"})");
   actor.cleanup();
-  auto route = json_to_pt(route_json);
+  auto route = test::json_to_pt(route_json);
 
   // TODO: check result
   // didn't find the right street names in the route?
@@ -135,7 +127,9 @@ struct TestTileDownloadData {
                      // non-existent tile to exercise 404 errors
                      {200305, 2, 0}};
     for (const auto& id : test_tile_ids) {
-      test_tile_names.emplace_back(baldr::GraphTile::FileSuffix(id, is_gzipped_tile));
+      test_tile_names.emplace_back(
+          baldr::GraphTile::FileSuffix(id, is_gzipped_tile ? baldr::SUFFIX_COMPRESSED
+                                                           : baldr::SUFFIX_NON_COMPRESSED));
     }
   }
 
@@ -184,8 +178,9 @@ void test_tile_download(size_t tile_count, size_t curler_count, size_t thread_co
           auto result = tile_getter.get(tile_uri);
 
           if (result.status_ == tile_getter_t::status_code_t::SUCCESS) {
-            auto tile = GraphTile(GraphId(), result.bytes_.data(), result.bytes_.size());
-            EXPECT_EQ(tile.id(), expected_tile_id);
+            auto tile = GraphTile::Create(GraphId(), std::move(result.bytes_));
+            ASSERT_TRUE(tile);
+            EXPECT_EQ(tile->id(), expected_tile_id);
           } else {
             EXPECT_EQ(expected_tile_id, non_existent_tile_id);
           }
@@ -225,9 +220,10 @@ void test_graphreader_tile_download(size_t tile_count, size_t curler_count, size
             GraphTile::CacheTileURL(params.full_tile_url_pattern, expected_tile_id, &tile_getter, "");
 
         if (expected_tile_id != non_existent_tile_id) {
-          EXPECT_EQ(tile.id(), expected_tile_id);
+          ASSERT_TRUE(tile);
+          EXPECT_EQ(tile->id(), expected_tile_id);
         } else {
-          EXPECT_EQ(tile.header(), nullptr) << "Expected empty header";
+          EXPECT_FALSE(tile) << "Expected no tile";
         }
       }
     });
@@ -256,6 +252,52 @@ TEST(HttpTiles, test_curler_multiple_threads_contention) {
 
 TEST(HttpTiles, test_graphreader_multiple_threads) {
   test_graphreader_tile_download(8, 2, 4);
+}
+
+TEST(HttpTiles, test_interrupt) {
+  using namespace baldr;
+
+  TestTileDownloadData params;
+  const auto url_builder = [&params](size_t index) -> std::string {
+    auto test_tile_index = index % params.test_tile_names.size();
+    auto tile_name = params.test_tile_names[test_tile_index];
+    auto tile_uri = params.tile_url_base;
+    tile_uri += tile_name;
+    tile_uri += params.request_params;
+    return tile_uri;
+  };
+
+  const auto non_existent_tile_id = params.get_nonexistent_tile_id();
+  std::unordered_set<std::string> canceled_uris{url_builder(0), url_builder(2)};
+
+  curl_tile_getter_t tile_getter(2, "", params.is_gzipped_tile);
+  std::string tile_uri;
+  const curl_tile_getter_t::interrupt_t interrupt = [&tile_uri, &canceled_uris] {
+    if (canceled_uris.find(tile_uri) != canceled_uris.end()) {
+      throw std::runtime_error("Interrupt");
+    }
+  };
+
+  tile_getter.set_interrupt(&interrupt);
+  for (size_t tile_i = 0; tile_i < params.test_tile_ids.size(); ++tile_i) {
+    auto test_tile_index = tile_i % params.test_tile_names.size();
+    auto expected_tile_id = params.test_tile_ids[test_tile_index];
+
+    tile_uri = url_builder(tile_i);
+    if (canceled_uris.find(tile_uri) != canceled_uris.end()) {
+      EXPECT_THROW(tile_getter.get(tile_uri), std::runtime_error);
+      continue;
+    }
+
+    auto result = tile_getter.get(tile_uri);
+    if (result.status_ == tile_getter_t::status_code_t::SUCCESS) {
+      auto tile = GraphTile::Create(GraphId(), std::move(result.bytes_));
+      ASSERT_TRUE(tile);
+      EXPECT_EQ(tile->id(), expected_tile_id);
+    } else {
+      EXPECT_EQ(expected_tile_id, non_existent_tile_id);
+    }
+  }
 }
 
 class HttpTilesEnv : public ::testing::Environment {

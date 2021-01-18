@@ -3,6 +3,7 @@
 #include "baldr/rapidjson_utils.h"
 #include "filesystem.h"
 #include "midgard/logging.h"
+#include "midgard/util.h"
 #include "mjolnir/graphtilebuilder.h"
 #include "mjolnir/util.h"
 
@@ -58,18 +59,6 @@ struct TrafficSpeeds {
   uint8_t free_flow_speed;
   std::vector<int16_t> coefficients;
 };
-
-// Convert big endian bytes to little endian
-int16_t to_little_endian(const int16_t val) {
-  return (val << 8) | ((val >> 8) & 0x00ff);
-}
-
-// base64 decoding
-std::string decode64(const std::string& val) {
-  using namespace boost::archive::iterators;
-  using It = transform_width<binary_from_base64<std::string::const_iterator>, 8, 6>;
-  return std::string(It(std::begin(val)), It(std::end(val)));
-}
 
 /**
  * Read speed CSV file and update the tile_speeds in unique_data
@@ -140,24 +129,12 @@ ParseTrafficFile(const std::vector<std::string>& filenames, stats& stat) {
                 try {
                   // Decode the base64 predicted speeds
                   // Decode the base64 string and cast the data to a raw string of signed bytes
-                  auto decoded_str = decode64(t);
-                  if (decoded_str.size() != 402) {
-                    throw std::runtime_error("Decoded speed string size should be 402 but is " +
-                                             std::to_string(decoded_str.size()));
-                  }
-                  auto raw = reinterpret_cast<const int8_t*>(decoded_str.data());
-
-                  // Create the coefficients. Each group of 2 bytes represents a signed, int16 number
-                  // (big endian). Convert to little endian.
-                  traffic->second.coefficients.reserve(kCoefficientCount);
-                  for (uint32_t i = 0, idx = 0; i < kCoefficientCount; ++i, idx += 2) {
-                    traffic->second.coefficients.push_back(
-                        to_little_endian(*(reinterpret_cast<const int16_t*>(&raw[idx]))));
-                  }
+                  auto coefficients = decode_compressed_speeds(t);
+                  traffic->second.coefficients.assign(coefficients.begin(), coefficients.end());
                   stat.compressed_count++;
                 } catch (std::exception& e) {
                   LOG_WARN("Invalid compressed speeds in file: " + full_filename + " line number " +
-                           std::to_string(line_num));
+                           std::to_string(line_num) + "; error='" + e.what() + "'");
                   has_error = true;
                 }
               }
@@ -335,7 +312,8 @@ int main(int argc, char** argv) {
   }
   std::vector<std::pair<GraphId, std::vector<std::string>>> traffic_tiles(files_per_tile.begin(),
                                                                           files_per_tile.end());
-  std::random_shuffle(traffic_tiles.begin(), traffic_tiles.end());
+  std::random_device rd;
+  std::shuffle(traffic_tiles.begin(), traffic_tiles.end(), std::mt19937(rd()));
 
   // Read the config file
   boost::property_tree::ptree pt;
@@ -428,7 +406,7 @@ int main(int argc, char** argv) {
         reader.Trim();
       }
 
-      const GraphTile* tile = reader.GetGraphTile(tile_id);
+      graph_tile_ptr tile = reader.GetGraphTile(tile_id);
       uint32_t n = tile->header()->directededgecount();
       if (n == 0)
         continue;

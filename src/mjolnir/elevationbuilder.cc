@@ -1,6 +1,5 @@
 #include "mjolnir/util.h"
 
-#include <boost/filesystem/operations.hpp>
 #include <boost/format.hpp>
 #include <future>
 #include <set>
@@ -10,6 +9,7 @@
 #include "baldr/graphconstants.h"
 #include "baldr/graphid.h"
 #include "baldr/graphreader.h"
+#include "filesystem.h"
 #include "midgard/logging.h"
 #include "midgard/pointll.h"
 #include "midgard/polyline2.h"
@@ -41,7 +41,7 @@ void add_elevation(const boost::property_tree::ptree& pt,
                    std::deque<GraphId>& tilequeue,
                    std::mutex& lock,
                    const std::unique_ptr<const valhalla::skadi::sample>& sample,
-                   std::promise<uint32_t>& result) {
+                   std::promise<uint32_t>& /*result*/) {
   // Local Graphreader
   GraphReader graphreader(pt.get_child("mjolnir"));
 
@@ -175,7 +175,7 @@ void ElevationBuilder::Build(const boost::property_tree::ptree& pt) {
   // Crack open some elevation data if its there. Return if it is not.
   boost::optional<std::string> elevation = pt.get_optional<std::string>("additional_data.elevation");
   std::unique_ptr<const skadi::sample> sample;
-  if (elevation && boost::filesystem::exists(*elevation)) {
+  if (elevation && filesystem::exists(*elevation)) {
     sample.reset(new skadi::sample(*elevation));
   } else {
     LOG_INFO("ElevationBuilder: no elevation data, skipping");
@@ -189,7 +189,8 @@ void ElevationBuilder::Build(const boost::property_tree::ptree& pt) {
   for (const auto& id : tileset) {
     tilequeue.emplace_back(id);
   }
-  std::random_shuffle(tilequeue.begin(), tilequeue.end());
+  std::random_device rd;
+  std::shuffle(tilequeue.begin(), tilequeue.end(), std::mt19937(rd()));
 
   // An mutex we can use to do the synchronization
   std::mutex lock;
@@ -197,7 +198,7 @@ void ElevationBuilder::Build(const boost::property_tree::ptree& pt) {
   // Setup threads
   uint32_t nthreads =
       std::max(static_cast<unsigned int>(1),
-               pt.get<unsigned int>("concurrency", std::thread::hardware_concurrency()));
+               pt.get<unsigned int>("mjolnir.concurrency", std::thread::hardware_concurrency()));
   std::vector<std::shared_ptr<std::thread>> threads(nthreads);
 
   // Setup promises. Hold the results for the threads

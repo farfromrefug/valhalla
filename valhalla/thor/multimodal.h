@@ -11,13 +11,14 @@
 #include <valhalla/baldr/double_bucket_queue.h>
 #include <valhalla/baldr/graphid.h>
 #include <valhalla/baldr/graphreader.h>
+#include <valhalla/baldr/time_info.h>
 #include <valhalla/proto/tripcommon.pb.h>
 #include <valhalla/sif/dynamiccost.h>
 #include <valhalla/sif/edgelabel.h>
 #include <valhalla/sif/hierarchylimits.h>
-#include <valhalla/thor/astar.h>
 #include <valhalla/thor/astarheuristic.h>
 #include <valhalla/thor/edgestatus.h>
+#include <valhalla/thor/pathalgorithm.h>
 #include <valhalla/thor/pathinfo.h>
 
 namespace valhalla {
@@ -54,21 +55,26 @@ public:
   GetBestPath(valhalla::Location& origin,
               valhalla::Location& dest,
               baldr::GraphReader& graphreader,
-              const std::shared_ptr<sif::DynamicCost>* mode_costing,
+              const sif::mode_costing_t& mode_costing,
               const sif::TravelMode mode,
-              const Options& options = Options::default_instance());
+              const Options& options = Options::default_instance()) override;
+
+  /**
+   * Returns the name of the algorithm
+   * @return the name of the algorithm
+   */
+  virtual const char* name() const override {
+    return "Multimodal";
+  }
 
   /**
    * Clear the temporary information generated during path construction.
    */
-  void Clear();
+  void Clear() override;
 
 protected:
   // Current walking distance.
   uint32_t walking_distance_;
-  bool has_date_time_;
-  int start_tz_index_; // Timezone at the start of the mm route
-
   uint32_t max_label_count_; // Max label count to allow
   sif::TravelMode mode_;     // Current travel mode
   uint8_t travel_type_;      // Current travel type
@@ -96,7 +102,7 @@ protected:
   std::vector<sif::MMEdgeLabel> edgelabels_;
 
   // Adjacency list - approximate double bucket sort
-  std::shared_ptr<baldr::DoubleBucketQueue> adjacencylist_;
+  std::shared_ptr<baldr::DoubleBucketQueue<sif::MMEdgeLabel>> adjacencylist_;
 
   // Edge status. Mark edges that are in adjacency list or settled.
   EdgeStatus edgestatus_;
@@ -160,7 +166,7 @@ protected:
                       const std::shared_ptr<sif::DynamicCost>& costing,
                       EdgeStatus& edgestatus,
                       std::vector<sif::EdgeLabel>& edgelabels,
-                      baldr::DoubleBucketQueue& adjlist,
+                      baldr::DoubleBucketQueue<sif::EdgeLabel>& adjlist,
                       const bool from_transition);
 
   /**
@@ -173,7 +179,8 @@ protected:
    * @param pc Pedestrian costing.
    * @param tc Transit costing.
    * @param mode_costing Array of all costing models.
-   * @return Returns true if the isochrone is done.
+   * @param  time_info    Information time offset as the route progresses
+   * @return Returns false if the node could not be expanded from
    */
   bool ExpandForward(baldr::GraphReader& graphreader,
                      const baldr::GraphId& node,
@@ -182,7 +189,8 @@ protected:
                      const bool from_transition,
                      const std::shared_ptr<sif::DynamicCost>& pc,
                      const std::shared_ptr<sif::DynamicCost>& tc,
-                     const std::shared_ptr<sif::DynamicCost>* mode_costing);
+                     const sif::mode_costing_t& mode_costing,
+                     const baldr::TimeInfo& time_info);
 
   /**
    * Check if destination can be reached if walking is the last mode. Checks

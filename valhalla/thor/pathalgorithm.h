@@ -11,6 +11,7 @@
 #include <valhalla/baldr/graphreader.h>
 #include <valhalla/proto/api.pb.h>
 #include <valhalla/sif/dynamiccost.h>
+#include <valhalla/sif/edgelabel.h>
 #include <valhalla/thor/edgestatus.h>
 #include <valhalla/thor/pathinfo.h>
 
@@ -53,9 +54,15 @@ public:
   GetBestPath(valhalla::Location& origin,
               valhalla::Location& dest,
               baldr::GraphReader& graphreader,
-              const std::shared_ptr<sif::DynamicCost>* mode_costing,
+              const sif::mode_costing_t& mode_costing,
               const sif::TravelMode mode,
               const Options& options = Options::default_instance()) = 0;
+
+  /**
+   * Returns the name of the algorithm
+   * @return the name of the algorithm
+   */
+  virtual const char* name() const = 0;
 
   /**
    * Clear the temporary information generated during path construction.
@@ -99,6 +106,9 @@ protected:
   // for tracking the expansion of the algorithm visually
   expansion_callback_t expansion_callback_;
 
+  // when doing timezone differencing a timezone cache speeds up the computation
+  baldr::DateTime::tz_sys_info_cache_t tz_cache_;
+
   /**
    * Check for path completion along the same edge. Edge ID in question
    * is along both an origin and destination and origin shows up at the
@@ -123,17 +133,6 @@ protected:
     }
     return false;
   }
-
-  /**
-   * Convenience method to get the timezone index at a node.
-   * @param graphreader Graph reader.
-   * @param node GraphId of the node to get the timezone index.
-   * @return Returns the timezone index. A value of 0 indicates an invalid timezone.
-   */
-  int GetTimezone(baldr::GraphReader& graphreader, const baldr::GraphId& node) {
-    const baldr::GraphTile* tile = graphreader.GetGraphTile(node);
-    return (tile == nullptr) ? 0 : tile->node(node)->timezone();
-  }
 };
 
 // Container for the data we iterate over in Expand* function
@@ -144,7 +143,7 @@ struct EdgeMetadata {
 
   inline static EdgeMetadata make(const baldr::GraphId& node,
                                   const baldr::NodeInfo* nodeinfo,
-                                  const baldr::GraphTile* tile,
+                                  const graph_tile_ptr& tile,
                                   EdgeStatus& edge_status_) {
     baldr::GraphId edge_id = {node.tileid(), node.level(), nodeinfo->edge_index()};
     EdgeStatusInfo* edge_status = edge_status_.GetPtr(edge_id, tile);
@@ -152,10 +151,19 @@ struct EdgeMetadata {
     return {directededge, edge_id, edge_status};
   }
 
-  inline void increment_pointers() {
+  inline EdgeMetadata& operator++() {
     ++edge;
     ++edge_id;
     ++edge_status;
+    return *this;
+  }
+
+  inline operator bool() const {
+    return edge;
+  }
+
+  inline bool operator!() const {
+    return !edge;
   }
 };
 

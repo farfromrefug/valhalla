@@ -1,3 +1,4 @@
+#include "gurka/gurka.h"
 #include "test.h"
 
 #include "baldr/graphreader.h"
@@ -5,7 +6,8 @@
 #include "loki/reach.h"
 #include "midgard/encoded.h"
 #include "midgard/logging.h"
-#include "sif/autocost.h"
+#include "sif/costfactory.h"
+#include "sif/dynamiccost.h"
 
 #include <algorithm>
 #include <boost/property_tree/ptree.hpp>
@@ -18,16 +20,6 @@ namespace vs = valhalla::sif;
 
 namespace {
 
-std::shared_ptr<vs::DynamicCost> create_costing() {
-  Options options;
-  const rapidjson::Document doc;
-  sif::ParseAutoCostOptions(doc, "/costing_options/auto", options.add_costing_options());
-  sif::ParseAutoShorterCostOptions(doc, "/costing_options/auto_shorter",
-                                   options.add_costing_options());
-  options.add_costing_options();
-  return vs::CreateAutoCost(Costing::auto_, options);
-}
-
 boost::property_tree::ptree get_conf() {
   std::stringstream ss;
   ss << R"({
@@ -35,7 +27,7 @@ boost::property_tree::ptree get_conf() {
       "loki":{
         "actions":["route"],
         "logging":{"long_request": 100},
-        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "heading_tolerance": 60}
+        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "street_side_max_distance": 1000, "heading_tolerance": 60}
       },
       "thor":{"logging":{"long_request": 100}},
       "odin":{"logging":{"long_request": 100}},
@@ -51,7 +43,7 @@ boost::property_tree::ptree get_conf() {
         "bicycle": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50},
         "bus": {"max_distance": 5000000.0,"max_locations": 50,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
         "hov": {"max_distance": 5000000.0,"max_locations": 20,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
-        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time": 120},
+        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time_contour": 120, "max_distance_contour":200},
         "max_avoid_locations": 50,"max_radius": 200,"max_reachability": 100,"max_alternates":2,
         "multimodal": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 0.0,"max_matrix_locations": 0},
         "pedestrian": {"max_distance": 250000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50,"max_transit_walking_distance": 10000,"min_transit_walking_distance": 1},
@@ -68,7 +60,7 @@ boost::property_tree::ptree get_conf() {
 
 GraphId begin_node(GraphReader& reader, const DirectedEdge* edge) {
   // grab the node
-  const auto* tile = reader.GetGraphTile(edge->endnode());
+  auto tile = reader.GetGraphTile(edge->endnode());
   const auto* node = tile->node(edge->endnode());
   // grab the opp edges end node
   const auto* opp_edge = tile->directededge(node->edge_index() + edge->opp_index());
@@ -80,12 +72,12 @@ TEST(Reach, check_all_reach) {
   auto conf = get_conf();
   GraphReader reader(conf.get_child("mjolnir"));
 
-  auto costing = create_costing();
+  auto costing = vs::CostFactory{}.Create(Costing::auto_);
   Reach reach_finder;
 
   // look at all the edges
   for (auto tile_id : reader.GetTileSet()) {
-    const auto* tile = reader.GetGraphTile(tile_id);
+    auto tile = reader.GetGraphTile(tile_id);
     // loop over edges
     for (GraphId edge_id = tile->header()->graphid();
          edge_id.id() < tile->header()->directededgecount(); ++edge_id) {
@@ -101,7 +93,7 @@ TEST(Reach, check_all_reach) {
 
       // begin and end nodes are nice to check
       auto node_id = begin_node(reader, edge);
-      const auto* t = reader.GetGraphTile(node_id);
+      auto t = reader.GetGraphTile(node_id);
       const auto* begin = t->node(node_id);
       t = reader.GetGraphTile(edge->endnode());
       const auto* end = t->node(edge->endnode());
@@ -114,17 +106,58 @@ TEST(Reach, check_all_reach) {
 
       // if inbound is 0 and outbound is not then it must be an edge leaving a dead end
       // meaning a begin node that is not accessable
-      EXPECT_FALSE(reach.inbound == 0 && reach.outbound > 0 && !costing->GetNodeFilter()(begin))
+      EXPECT_FALSE(reach.inbound == 0 && reach.outbound > 0 && costing->Allowed(begin))
           << "Only outbound reach should mean an edge that leaves a dead end: " +
                  std::to_string(edge_id.value) + " " + shape_str;
 
       // if outbound is 0 and inbound is not then it must be an edge entering a dead end
       // meaning an end node that is not accessable
-      EXPECT_FALSE(reach.inbound > 0 && reach.outbound == 0 && !costing->GetNodeFilter()(end))
+      EXPECT_FALSE(reach.inbound > 0 && reach.outbound == 0 && costing->Allowed(end))
           << "Only inbound reach should mean an edge that enters a dead end: " +
                  std::to_string(edge_id.value) + " " + shape_str;
     }
   }
+}
+
+TEST(Reach, transition_misscount) {
+  const std::string ascii_map = R"(
+      b--c--d
+      |  |  |
+      |  |  |
+      a--f--e
+      |  |  |
+      |  |  |
+      g--h--i
+    )";
+
+  const gurka::ways ways = {
+      {"abcdefaghie", {{"highway", "residential"}}},
+      {"cfh", {{"highway", "tertiary"}}},
+  };
+
+  // build the graph
+  const auto layout = gurka::detail::map_to_coordinates(ascii_map, 100);
+  auto map = gurka::buildtiles(layout, ways, {}, {}, "test/data/wrong_reach");
+
+  // get an auto costing
+  sif::CostFactory factory;
+  auto costing = factory.Create(valhalla::auto_);
+
+  // find the problem edge
+  baldr::GraphReader reader(map.config.get_child("mjolnir"));
+  auto edge = gurka::findEdgeByNodes(reader, map.nodes, "a", "f");
+
+  // check its reach
+  loki::Reach reach_checker;
+  auto reach = reach_checker(std::get<1>(edge), std::get<0>(edge), 50, reader, costing);
+
+  // all edges should have the same in/outbound reach
+  EXPECT_EQ(reach.inbound, reach.outbound);
+
+  // they all should be 7. there are only 5 obvious graph nodes above but we insert 2 more
+  // at d and g because the path the way makes loops back on itself
+  EXPECT_EQ(reach.inbound, 7);
+  EXPECT_EQ(reach.outbound, 7);
 }
 
 } // namespace

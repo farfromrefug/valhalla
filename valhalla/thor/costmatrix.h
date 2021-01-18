@@ -5,7 +5,6 @@
 #include <map>
 #include <memory>
 #include <set>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -93,6 +92,7 @@ public:
    * the constructor mainly just sets some internals to a default empty value.
    */
   CostMatrix();
+  ~CostMatrix();
 
   /**
    * Forms a time distance matrix from the set of source locations
@@ -109,7 +109,7 @@ public:
   SourceToTarget(const google::protobuf::RepeatedPtrField<valhalla::Location>& source_location_list,
                  const google::protobuf::RepeatedPtrField<valhalla::Location>& target_location_list,
                  baldr::GraphReader& graphreader,
-                 const std::shared_ptr<sif::DynamicCost>* mode_costing,
+                 const sif::mode_costing_t& mode_costing,
                  const sif::TravelMode mode,
                  const float max_matrix_distance);
 
@@ -145,19 +145,16 @@ protected:
   // Adjacency lists, EdgeLabels, EdgeStatus, and hierarchy limits for each
   // source location (forward traversal)
   std::vector<std::vector<sif::HierarchyLimits>> source_hierarchy_limits_;
-  std::vector<std::shared_ptr<baldr::DoubleBucketQueue>> source_adjacency_;
+  std::vector<std::shared_ptr<baldr::DoubleBucketQueue<sif::BDEdgeLabel>>> source_adjacency_;
   std::vector<std::vector<sif::BDEdgeLabel>> source_edgelabel_;
   std::vector<EdgeStatus> source_edgestatus_;
 
   // Adjacency lists, EdgeLabels, EdgeStatus, and hierarchy limits for each
   // target location (reverse traversal)
   std::vector<std::vector<sif::HierarchyLimits>> target_hierarchy_limits_;
-  std::vector<std::shared_ptr<baldr::DoubleBucketQueue>> target_adjacency_;
+  std::vector<std::shared_ptr<baldr::DoubleBucketQueue<sif::BDEdgeLabel>>> target_adjacency_;
   std::vector<std::vector<sif::BDEdgeLabel>> target_edgelabel_;
   std::vector<EdgeStatus> target_edgestatus_;
-
-  // Mark each target edge with a list of target indexes that have reached it
-  std::unordered_map<baldr::GraphId, std::vector<uint32_t>> targets_;
 
   // List of best connections found so far
   std::vector<BestCandidate> best_connection_;
@@ -250,6 +247,12 @@ protected:
    * @return  Returns a time distance matrix among locations.
    */
   std::vector<TimeDistance> FormTimeDistanceMatrix();
+
+private:
+  class TargetMap;
+
+  // Mark each target edge with a list of target indexes that have reached it
+  std::unique_ptr<TargetMap> targets_;
 };
 
 } // namespace thor

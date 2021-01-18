@@ -6,11 +6,9 @@
 
 #include "baldr/rapidjson_utils.h"
 #include "loki/worker.h"
-#include "midgard/logging.h"
 #include "midgard/util.h"
 #include "odin/worker.h"
 #include "sif/autocost.h"
-#include "thor/astar.h"
 #include "thor/worker.h"
 #include <boost/property_tree/ptree.hpp>
 
@@ -34,7 +32,7 @@ boost::property_tree::ptree get_conf() {
         "logging":{"long_request": 100,
         "type": "std_out"
         },
-        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "heading_tolerance": 60}
+        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "street_side_max_distance": 1000, "heading_tolerance": 60}
       },
       "thor":{"logging":{"long_request": 100,
         "type": "std_out"
@@ -52,7 +50,7 @@ boost::property_tree::ptree get_conf() {
         "bicycle": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50},
         "bus": {"max_distance": 5000000.0,"max_locations": 50,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
         "hov": {"max_distance": 5000000.0,"max_locations": 20,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
-        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time": 120},
+        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time_contour": 120, "max_distance_contour":200},
         "max_avoid_locations": 50,"max_radius": 200,"max_reachability": 100,"max_alternates":2,
         "multimodal": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 0.0,"max_matrix_locations": 0},
         "pedestrian": {"max_distance": 250000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50,"max_transit_walking_distance": 10000,"min_transit_walking_distance": 1},
@@ -111,7 +109,7 @@ void check_dates(bool time_dependent,
                   l.date_time().find('-', l.date_time().find('T')) == std::string::npos);
       // get the timezone
       baldr::GraphId edge_id(l.path_edges().begin()->graph_id());
-      const auto* tile = reader.GetGraphTile(edge_id);
+      auto tile = reader.GetGraphTile(edge_id);
       const auto* edge = tile->directededge(edge_id);
       tile = reader.GetGraphTile(edge->endnode(), tile);
       const auto* node = tile->node(edge->endnode());
@@ -381,9 +379,10 @@ TEST(MultiPointRoutesBreakThrough, test_mid_break_through_elapsed) {
   // even without turncost, have taken some non zero time to traverse
   auto last_node = legs.rbegin()->node().rbegin();
   auto previous_node = std::next(last_node);
-  EXPECT_LT(previous_node->elapsed_time(),
-            last_node->elapsed_time() - previous_node->transition_time());
-  EXPECT_NEAR(legs.rbegin()->node().rbegin()->elapsed_time(), 18.2, .2);
+  EXPECT_LT(previous_node->cost().elapsed_cost().seconds(),
+            last_node->cost().elapsed_cost().seconds() -
+                previous_node->cost().transition_cost().seconds());
+  EXPECT_NEAR(legs.rbegin()->node().rbegin()->cost().elapsed_cost().seconds(), 11.2, .2);
 }
 
 } // namespace

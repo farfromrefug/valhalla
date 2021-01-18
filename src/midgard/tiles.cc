@@ -1,9 +1,15 @@
-#include "midgard/tiles.h"
-#include "midgard/distanceapproximator.h"
-#include "midgard/polyline2.h"
-#include "midgard/util.h"
+#include <array>
 #include <cmath>
+#include <queue>
 #include <set>
+#include <unordered_set>
+#include <vector>
+
+#include "midgard/distanceapproximator.h"
+#include "midgard/ellipse.h"
+#include "midgard/polyline2.h"
+#include "midgard/tiles.h"
+#include "midgard/util.h"
 
 namespace {
 
@@ -48,7 +54,7 @@ template <class coord_t> struct closest_first_generator_t {
   valhalla::midgard::Tiles<coord_t> tiles;
   int32_t subcols, subrows;
   std::unordered_set<int32_t> queued;
-  using best_t = std::pair<float, int32_t>;
+  using best_t = std::pair<double, int32_t>;
   std::set<best_t, std::function<bool(const best_t&, const best_t&)>> queue;
 
   closest_first_generator_t(const valhalla::midgard::Tiles<coord_t>& tiles, const coord_t& seed)
@@ -68,14 +74,14 @@ template <class coord_t> struct closest_first_generator_t {
   }
 
   // something to measure the closest possible point of a subdivision from the given seed point
-  float dist(int32_t sub) {
+  double dist(int32_t sub) {
     auto x = sub % subcols;
     auto x0 = tiles.TileBounds().minx() + x * tiles.SubdivisionSize();
     auto x1 = tiles.TileBounds().minx() + (x + 1) * tiles.SubdivisionSize();
     auto y = sub / subcols;
     auto y0 = tiles.TileBounds().miny() + y * tiles.SubdivisionSize();
     auto y1 = tiles.TileBounds().miny() + (y + 1) * tiles.SubdivisionSize();
-    auto distance = std::numeric_limits<float>::max();
+    auto distance = std::numeric_limits<double>::max();
     std::list<coord_t> corners{{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}};
     if (x0 < seed.first && x1 > seed.first) {
       corners.emplace_back(seed.first, y0);
@@ -124,7 +130,7 @@ template <class coord_t> struct closest_first_generator_t {
   }
 
   // get the next closest subdivision
-  std::tuple<int32_t, unsigned short, float> next() {
+  std::tuple<int32_t, unsigned short, double> next() {
     // get the next closest one or bail
     if (!queue.size()) {
       throw std::runtime_error("Subdivisions were exhausted");
@@ -184,10 +190,9 @@ Tiles<coord_t>::Tiles(const coord_t& min_pt,
       subdivision_size_(tilesize_ / nsubdivisions_), nsubdivisions_(subdivisions), wrapx_(wrapx) {
 }
 
-// Get the list of tiles that lie within the specified bounding box.
-// The method finds the center tile and spirals out by finding neighbors
-// and recursively checking if tile is inside and checking/adding
-// neighboring tiles
+// Get the list of tiles that lie within the specified bounding box. Since tiles as well as the
+// bounding box are both aligned to the axes we can simply find tiles by iterating over rows
+// and columns of tiles from the minimum to maximum.
 template <class coord_t> std::vector<int> Tiles<coord_t>::TileList(const AABB2<coord_t>& bbox) const {
   // Check if x range needs to be split
   std::vector<AABB2<coord_t>> bboxes;
@@ -223,6 +228,47 @@ template <class coord_t> std::vector<int> Tiles<coord_t>::TileList(const AABB2<c
     }
   }
   return tilelist;
+}
+
+// Get the list of tiles that lie within the specified bounding box. The method finds the tile
+// at the ellipse center. It successively finds neighbors and checks if they are inside or intersect
+// with the ellipse.
+template <class coord_t>
+std::vector<int32_t> Tiles<coord_t>::TileList(const Ellipse<coord_t>& e) const {
+  // Create a queue of tiles to check, initialize with the tile at the center of the ellipse
+  int32_t tileid = TileId(e.center());
+  std::queue<int32_t> check_queue;
+  check_queue.push(tileid);
+
+  // Record any tiles added to the check_queue
+  std::unordered_set<int32_t> checked_tiles;
+  checked_tiles.insert(tileid);
+
+  // Successively check a tile from the queue - if tile bounds are not outside the ellipse then
+  // add to the tile list and find its neighbors. Add them to the check list if not in the checked
+  // tiles list.
+  std::vector<int32_t> tile_list;
+  while (!check_queue.empty()) {
+    tileid = check_queue.front();
+    check_queue.pop();
+
+    // Test if the tile bounds is not outside the ellipse (if not the ellipse is inside the tile,
+    // the tile is inside the ellipse, or the tile bounds intersects the ellipse).
+    if (e.DoesIntersect(TileBounds(tileid)) != IntersectCase::kOutside) {
+      tile_list.push_back(tileid);
+
+      // Add neighboring tiles that have not already been checked
+      std::array<int32_t, 4> neighbors = {BottomNeighbor(tileid), TopNeighbor(tileid),
+                                          LeftNeighbor(tileid), RightNeighbor(tileid)};
+      for (const auto nb : neighbors) {
+        if (checked_tiles.find(nb) == checked_tiles.end()) {
+          check_queue.push(nb);
+          checked_tiles.insert(nb);
+        }
+      }
+    }
+  }
+  return tile_list;
 }
 
 // Color a "connectivity map" starting with a sparse map of uncolored tiles.
@@ -326,8 +372,8 @@ Tiles<coord_t>::Intersect(const container_t& linestring) const {
   // small interval so as to approximate the arc with piecewise linear segments
   container_t resampled;
   auto max_meters =
-      std::max(1.f, subdivision_size_ * .25f *
-                        DistanceApproximator::MetersPerLngDegree(linestring.front().second));
+      std::max(1., subdivision_size_ * .25 *
+                       DistanceApproximator<coord_t>::MetersPerLngDegree(linestring.front().second));
   if (coord_t::IsSpherical() && Polyline2<coord_t>::Length(linestring) > max_meters) {
     resampled = resample_spherical_polyline(linestring, max_meters, true);
   }
@@ -419,7 +465,7 @@ Tiles<coord_t>::Intersect(const AABB2<coord_t>& box) const {
 }
 
 template <class coord_t>
-std::function<std::tuple<int32_t, unsigned short, float>()>
+std::function<std::tuple<int32_t, unsigned short, double>()>
 Tiles<coord_t>::ClosestFirst(const coord_t& seed) const {
   return std::bind(&closest_first_generator_t<coord_t>::next,
                    closest_first_generator_t<coord_t>(*this, seed));

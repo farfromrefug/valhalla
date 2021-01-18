@@ -3,39 +3,52 @@
 
 #include <boost/property_tree/ptree.hpp>
 #include <list>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include <sqlite3.h>
+
+#include <valhalla/baldr/graphid.h>
+#include <valhalla/baldr/rapidjson_utils.h>
+#include <valhalla/midgard/logging.h>
 #include <valhalla/midgard/pointll.h>
 
 namespace valhalla {
 namespace mjolnir {
 
-// NOTE - for now parse and build must be run at the same time!
+using boost::property_tree::ptree;
+
 // Stages of the Valhalla tile building pipeline
 enum class BuildStage : int8_t {
   kInvalid = -1,
   kInitialize = 0,
-  kParse = 1,
-  kBuild = 2,
-  kEnhance = 3,
-  kFilter = 4,
-  kTransit = 5,
-  kBss = 6,
-  kHierarchy = 7,
-  kShortcuts = 8,
-  kRestrictions = 9,
-  kElevation = 10,
-  kValidate = 11,
-  kCleanup = 12
+  kParseWays = 1,
+  kParseRelations = 2,
+  kParseNodes = 3,
+  kConstructEdges = 4,
+  kBuild = 5,
+  kEnhance = 6,
+  kFilter = 7,
+  kTransit = 8,
+  kBss = 9,
+  kHierarchy = 10,
+  kShortcuts = 11,
+  kRestrictions = 12,
+  kElevation = 13,
+  kValidate = 14,
+  kCleanup = 15
 };
 
 // Convert string to BuildStage
 inline BuildStage string_to_buildstage(const std::string& s) {
   static const std::unordered_map<std::string, BuildStage> stringToBuildStage =
       {{"initialize", BuildStage::kInitialize},
-       {"parse", BuildStage::kParse},
+       {"parseways", BuildStage::kParseWays},
+       {"parserelations", BuildStage::kParseRelations},
+       {"parsenodes", BuildStage::kParseNodes},
+       {"constructedges", BuildStage::kConstructEdges},
        {"build", BuildStage::kBuild},
        {"enhance", BuildStage::kEnhance},
        {"filter", BuildStage::kFilter},
@@ -56,7 +69,10 @@ inline BuildStage string_to_buildstage(const std::string& s) {
 inline std::string to_string(BuildStage stg) {
   static const std::unordered_map<uint8_t, std::string> BuildStageStrings =
       {{static_cast<int8_t>(BuildStage::kInitialize), "initialize"},
-       {static_cast<int8_t>(BuildStage::kParse), "parse"},
+       {static_cast<int8_t>(BuildStage::kParseWays), "parseways"},
+       {static_cast<int8_t>(BuildStage::kParseRelations), "parserelations"},
+       {static_cast<int8_t>(BuildStage::kParseNodes), "parsenodes"},
+       {static_cast<int8_t>(BuildStage::kConstructEdges), "constructedges"},
        {static_cast<int8_t>(BuildStage::kBuild), "build"},
        {static_cast<int8_t>(BuildStage::kEnhance), "enhance"},
        {static_cast<int8_t>(BuildStage::kFilter), "filter"},
@@ -106,6 +122,13 @@ bool shapes_match(const std::vector<midgard::PointLL>& shape1,
 uint32_t compute_curvature(const std::list<midgard::PointLL>& shape);
 
 /**
+ * Loads spatialite extension for sqlite
+ * @param db_handle   the handle to the open sqlite database
+ * @return returns true if the module was successfully loaded
+ */
+bool load_spatialite(sqlite3* db_handle);
+
+/**
  * Build an entire valhalla tileset give a config file and some input pbfs. The
  * tile building process is split into stages. This method allows either the entire
  * tile building pipeline to run (default) or a subset of the stages to run.
@@ -117,12 +140,76 @@ uint32_t compute_curvature(const std::list<midgard::PointLL>& shape);
  * unusable afterwards.  Set to false if you need to perform protobuf operations after building tiles.
  * @return Returns true if no errors occur, false if an error occurs.
  */
-bool build_tile_set(const boost::property_tree::ptree& config,
+bool build_tile_set(const ptree& config,
                     const std::vector<std::string>& input_files,
                     const BuildStage start_stage = BuildStage::kInitialize,
                     const BuildStage end_stage = BuildStage::kValidate,
                     const bool release_osmpbf_memory = true);
 
+// The tile manifest is a JSON-serializable index of tiles to be processed during the build stage of
+// valhalla_build_tiles'. It can be used to distribute shard keys when building tiles with
+// parallelized, distributed batch processing. For example, a workflow orchestrator can partition
+// and distribute this manifest to workers in a 'build' stage worker pool.
+//
+// This file written out during 'constructedges' and a prerequisite for the 'build' stage run by
+// valhalla_build_tiles.
+//
+// Example manifest :
+//
+// {
+//   "tiles": [
+//     {
+//       "node_index": 0,
+//       "graphid": {
+//         "value": 5970538,
+//         "id": 0,
+//         "tile_id": 746317,
+//         "level": 2
+//       }
+//     }
+//   ]
+// }
+struct TileManifest {
+
+  std::map<baldr::GraphId, size_t> tileset;
+
+  std::string ToString() const {
+    baldr::json::ArrayPtr array = baldr::json::array({});
+    for (const auto& tile : tileset) {
+      const baldr::json::Value& graphid = tile.first.json();
+      const baldr::json::MapPtr& item = baldr::json::map(
+          {{"graphid", graphid}, {"node_index", static_cast<uint64_t>(tile.second)}});
+      array->emplace_back(item);
+    }
+    std::stringstream manifest;
+    manifest << *baldr::json::map({{"tiles", array}});
+    return manifest.str();
+  }
+
+  void LogToFile(const std::string& filename) const {
+    std::ofstream handle;
+    handle.open(filename);
+    handle << ToString();
+    handle.close();
+    LOG_INFO("Writing tile manifest to " + filename);
+  }
+
+  static TileManifest ReadFromFile(const std::string& filename) {
+    ptree manifest;
+    rapidjson::read_json(filename, manifest);
+    LOG_INFO("Reading tile manifest from " + filename);
+    std::map<baldr::GraphId, size_t> tileset;
+    for (const auto& tile_info : manifest.get_child("tiles")) {
+      const ptree& graph_id = tile_info.second.get_child("graphid");
+      const baldr::GraphId id(graph_id.get<uint64_t>("value"));
+      const size_t node_index = tile_info.second.get<size_t>("node_index");
+      tileset.insert({id, node_index});
+    }
+    LOG_INFO("Reading " + std::to_string(tileset.size()) + " tiles from tile manifest file " +
+             filename);
+    return TileManifest{tileset};
+  }
+};
 } // namespace mjolnir
 } // namespace valhalla
 #endif // VALHALLA_MJOLNIR_UTIL_H_

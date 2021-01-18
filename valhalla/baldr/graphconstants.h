@@ -1,6 +1,7 @@
 #ifndef VALHALLA_BALDR_GRAPHCONSTANTS_H_
 #define VALHALLA_BALDR_GRAPHCONSTANTS_H_
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -17,9 +18,8 @@ constexpr uint32_t kMaxGraphTileId = 4194303;
 // Maximum id/index within a tile. 21 bits
 constexpr uint32_t kMaxGraphId = 2097151;
 
-// A value to use for invalid latitude/longitudes (i.e. uninitialized)
-constexpr float kInvalidLatitude = std::numeric_limits<float>::max();
-constexpr float kInvalidLongitude = std::numeric_limits<float>::max();
+// Invalid edge label
+constexpr uint32_t kInvalidLabel = std::numeric_limits<uint32_t>::max();
 
 // Access bit field constants. Access in directed edge allows 12 bits.
 constexpr uint16_t kAutoAccess = 1;
@@ -82,10 +82,14 @@ constexpr uint32_t kMaxDensity = 15;
 // unlimited.
 constexpr uint8_t kUnlimitedSpeedLimit = std::numeric_limits<uint8_t>::max();
 
+// The max assumed speed we know from static data
+constexpr uint8_t kMaxAssumedSpeed = 140; // ~85 MPH
+// Actual speed from traffic
+constexpr uint8_t kMaxTrafficSpeed = 252; // ~157 MPH
 // Maximum speed. This impacts the effectiveness of A* for driving routes
 // so it should be set as low as is reasonable. Speeds above this in OSM are
 // clamped to this maximum value.
-constexpr uint32_t kMaxSpeedKph = 140; // ~85 MPH
+constexpr uint32_t kMaxSpeedKph = std::max(kMaxTrafficSpeed, kMaxAssumedSpeed);
 
 // Minimum speed. This is a stop gap for dubious traffic data. While its possible
 // to measure a probe going this slow via stop and go traffic over a long enough
@@ -93,7 +97,7 @@ constexpr uint32_t kMaxSpeedKph = 140; // ~85 MPH
 constexpr uint32_t kMinSpeedKph = 5; // ~3 MPH
 
 inline bool valid_speed(float speed) {
-  return speed > kMinSpeedKph && speed < kMaxSpeedKph;
+  return speed > kMinSpeedKph && speed < kMaxAssumedSpeed;
 }
 
 // Maximum ferry speed
@@ -202,22 +206,25 @@ enum class NodeType : uint8_t {
   kBikeShare = 7,               // Bike share location
   kParking = 8,                 // Parking location
   kMotorWayJunction = 9,        // Highway = motorway_junction
-  kBorderControl = 10           // Border control
+  kBorderControl = 10,          // Border control
+  kTollGantry = 11,             // Toll gantry
+  kSumpBuster = 12              // Sump Buster
 };
 inline std::string to_string(NodeType n) {
-  static const std::unordered_map<uint8_t, std::string> NodeTypeStrings = {
-      {static_cast<uint8_t>(NodeType::kStreetIntersection), "street_intersection"},
-      {static_cast<uint8_t>(NodeType::kGate), "gate"},
-      {static_cast<uint8_t>(NodeType::kBollard), "bollard"},
-      {static_cast<uint8_t>(NodeType::kTollBooth), "toll_booth"},
-      {static_cast<uint8_t>(NodeType::kTransitEgress), "transit_egress"},
-      {static_cast<uint8_t>(NodeType::kTransitStation), "transit_station"},
-      {static_cast<uint8_t>(NodeType::kMultiUseTransitPlatform), "multi_use_transit_platform"},
-      {static_cast<uint8_t>(NodeType::kBikeShare), "bike_share"},
-      {static_cast<uint8_t>(NodeType::kParking), "parking"},
-      {static_cast<uint8_t>(NodeType::kMotorWayJunction), "motor_way_junction"},
-      {static_cast<uint8_t>(NodeType::kBorderControl), "border_control"},
-  };
+  static const std::unordered_map<uint8_t, std::string> NodeTypeStrings =
+      {{static_cast<uint8_t>(NodeType::kStreetIntersection), "street_intersection"},
+       {static_cast<uint8_t>(NodeType::kGate), "gate"},
+       {static_cast<uint8_t>(NodeType::kBollard), "bollard"},
+       {static_cast<uint8_t>(NodeType::kTollBooth), "toll_booth"},
+       {static_cast<uint8_t>(NodeType::kTransitEgress), "transit_egress"},
+       {static_cast<uint8_t>(NodeType::kTransitStation), "transit_station"},
+       {static_cast<uint8_t>(NodeType::kMultiUseTransitPlatform), "multi_use_transit_platform"},
+       {static_cast<uint8_t>(NodeType::kBikeShare), "bike_share"},
+       {static_cast<uint8_t>(NodeType::kParking), "parking"},
+       {static_cast<uint8_t>(NodeType::kMotorWayJunction), "motor_way_junction"},
+       {static_cast<uint8_t>(NodeType::kBorderControl), "border_control"},
+       {static_cast<uint8_t>(NodeType::kTollGantry), "toll_gantry"},
+       {static_cast<uint8_t>(NodeType::kSumpBuster), "sump_buster"}};
 
   auto i = NodeTypeStrings.find(static_cast<uint8_t>(n));
   if (i == NodeTypeStrings.cend()) {
@@ -267,6 +274,7 @@ enum class Use : uint8_t {
   kCuldesac = 9,        // Cul-de-sac (edge that forms a loop and is only
                         // connected at one node to another edge.
   kLivingStreet = 10,   // Streets with preference towards bicyclists and pedestrians
+  kServiceRoad = 11,    // Generic service road (not driveway, alley, parking aisle, etc.)
 
   // Bicycle specific uses
   kCycleway = 20,     // Dedicated bicycle path
@@ -281,6 +289,10 @@ enum class Use : uint8_t {
   kPedestrian = 28,
   kBridleway = 29,
 
+  // Rest/Service Areas
+  kRestArea = 30,
+  kServiceArea = 31,
+
   // Other...
   kOther = 40,
 
@@ -294,7 +306,6 @@ enum class Use : uint8_t {
   kEgressConnection = 52,   // Connection to a egress node
   kPlatformConnection = 53, // Connection to a platform node
   kTransitConnection = 54,  // Connection to multi-use transit stop
-  kBikeShareConnection = 55 // Connection to multi-use transit stop
 
 };
 inline std::string to_string(Use u) {
@@ -310,6 +321,7 @@ inline std::string to_string(Use u) {
       {static_cast<uint8_t>(Use::kDriveThru), "drive_through"},
       {static_cast<uint8_t>(Use::kCuldesac), "culdesac"},
       {static_cast<uint8_t>(Use::kLivingStreet), "living_street"},
+      {static_cast<uint8_t>(Use::kServiceRoad), "service_road"},
       {static_cast<uint8_t>(Use::kCycleway), "cycleway"},
       {static_cast<uint8_t>(Use::kMountainBike), "mountain_bike"},
       {static_cast<uint8_t>(Use::kSidewalk), "sidewalk"},
@@ -318,6 +330,8 @@ inline std::string to_string(Use u) {
       {static_cast<uint8_t>(Use::kPath), "path"},
       {static_cast<uint8_t>(Use::kPedestrian), "pedestrian"},
       {static_cast<uint8_t>(Use::kBridleway), "bridleway"},
+      {static_cast<uint8_t>(Use::kRestArea), "rest_area"},
+      {static_cast<uint8_t>(Use::kServiceArea), "service_area"},
       {static_cast<uint8_t>(Use::kOther), "other"},
       {static_cast<uint8_t>(Use::kRailFerry), "rail-ferry"},
       {static_cast<uint8_t>(Use::kFerry), "ferry"},
@@ -326,7 +340,6 @@ inline std::string to_string(Use u) {
       {static_cast<uint8_t>(Use::kEgressConnection), "egress_connection"},
       {static_cast<uint8_t>(Use::kPlatformConnection), "platform_connnection"},
       {static_cast<uint8_t>(Use::kTransitConnection), "transit_connection"},
-      {static_cast<uint8_t>(Use::kBikeShareConnection), "bike_share_connection"},
   };
 
   auto i = UseStrings.find(static_cast<uint8_t>(u));
@@ -335,6 +348,11 @@ inline std::string to_string(Use u) {
   }
   return i->second;
 }
+
+enum class TaggedName : uint8_t { // must start at 1 due to nulls
+  kTunnel = 1,
+  kBridge = 2
+};
 
 // Speed type
 enum class SpeedType : uint8_t {
@@ -390,6 +408,10 @@ enum class SacScale : uint8_t {
   kDemandingAlpineHiking = 5,
   kDifficultAlpineHiking = 6
 };
+
+// Mountain bike scale
+const uint32_t kMaxMtbScale = 6;
+const uint32_t kMaxMtbUphillScale = 5;
 
 // Generalized representation of surface types. Lower values indicate smoother
 // surfaces. Vehicle or bicycle type can use this to avoid or disallow edges

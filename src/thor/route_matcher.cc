@@ -71,13 +71,13 @@ end_node_t GetEndEdges(GraphReader& reader,
     // at a node (not partially along the edge)
     if (edge.end_node()) {
       // If this edge ends at a node add its end node
-      auto* tile = reader.GetGraphTile(graphid);
+      auto tile = reader.GetGraphTile(graphid);
       auto* directededge = tile->directededge(graphid);
       end_nodes.insert({directededge->endnode(), std::make_pair(edge, 0.0f)});
     } else {
       // Get the start node of this edge
       GraphId opp_edge_id = reader.GetOpposingEdgeId(graphid);
-      auto* tile = reader.GetGraphTile(opp_edge_id);
+      auto tile = reader.GetGraphTile(opp_edge_id);
       if (tile == nullptr) {
         throw std::runtime_error("Couldn't get the opposing edge tile");
       }
@@ -98,7 +98,7 @@ end_node_t GetEndEdges(GraphReader& reader,
 // node and expands from there. Returns true once the end node has been found (and
 // distance is approximately what it should be). Returns false if expansion from this
 // node fails (cannot find edges that match the trace - either in position or distance).
-bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
+bool expand_from_node(const sif::mode_costing_t& mode_costing,
                       const TravelMode& mode,
                       GraphReader& reader,
                       const std::vector<meili::Measurement>& shape,
@@ -106,7 +106,7 @@ bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
                       uint32_t origin_epoch,
                       const bool use_timestamps,
                       size_t& correlated_index,
-                      const GraphTile* tile,
+                      const graph_tile_ptr& tile,
                       const GraphId& node,
                       end_node_t& end_nodes,
                       EdgeLabel& prev_edge_label,
@@ -151,7 +151,7 @@ bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
     }
 
     // Get the end node LL and set up the length comparison
-    const GraphTile* end_node_tile = reader.GetGraphTile(de->endnode());
+    graph_tile_ptr end_node_tile = reader.GetGraphTile(de->endnode());
     if (end_node_tile == nullptr) {
       continue;
     }
@@ -174,7 +174,7 @@ bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
           de->length() < length_comparison(length, true)) {
 
         // Get seconds from beginning of the week accounting for any changes to timezone on the path
-        uint32_t second_of_week = kInvalidSecondsOfWeek;
+        uint32_t second_of_week = kConstrainedFlowSecondOfDay;
         if (origin_epoch != 0 && nodeinfo) {
           second_of_week =
               DateTime::second_of_week(origin_epoch + static_cast<uint32_t>(elapsed.secs),
@@ -183,15 +183,15 @@ bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
 
         // get the cost of traversing the node and the edge
         auto& costing = mode_costing[static_cast<int>(mode)];
-        auto cost = costing->TransitionCost(de, nodeinfo, prev_edge_label) +
-                    costing->EdgeCost(de, end_node_tile, second_of_week);
+        auto transition_cost = costing->TransitionCost(de, nodeinfo, prev_edge_label);
+        auto cost = transition_cost + costing->EdgeCost(de, end_node_tile, second_of_week);
         elapsed += cost;
         // overwrite time with timestamps
         if (use_timestamps)
           elapsed.secs = shape[index].epoch_time() - shape[0].epoch_time();
 
         // Add edge and update correlated index
-        path_infos.emplace_back(mode, elapsed.secs, edge_id, 0, elapsed.cost, false);
+        path_infos.emplace_back(mode, elapsed, edge_id, 0, -1, transition_cost);
 
         // Set previous edge label
         prev_edge_label = {kInvalidLabel, edge_id, de, {}, 0, 0, mode, 0, {}};
@@ -221,7 +221,7 @@ bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
     const NodeTransition* trans = tile->transition(nodeinfo->transition_index());
     for (uint32_t i = start_trans; i < nodeinfo->transition_count(); ++i, ++trans) {
       followed_edges[correlated_index][level].second = i;
-      const GraphTile* end_node_tile = reader.GetGraphTile(trans->endnode());
+      graph_tile_ptr end_node_tile = reader.GetGraphTile(trans->endnode());
       if (end_node_tile == nullptr) {
         continue;
       }
@@ -238,7 +238,7 @@ bool expand_from_node(const std::shared_ptr<DynamicCost>* mode_costing,
 } // namespace
 
 // For the route path using an edge walking method.
-bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
+bool RouteMatcher::FormPath(const sif::mode_costing_t& mode_costing,
                             const sif::TravelMode& mode,
                             GraphReader& reader,
                             const std::vector<meili::Measurement>& shape,
@@ -273,7 +273,7 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
 
   // We support either the epoch timestamp that came with the trace point or
   // a local date time which we convert to epoch by finding the first timezone
-  const GraphTile* tile = nullptr;
+  graph_tile_ptr tile = nullptr;
   const DirectedEdge* directededge = nullptr;
   const NodeInfo* nodeinfo = nullptr;
   uint32_t origin_epoch = 0;
@@ -316,14 +316,14 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
     if (!graphid.Is_Valid()) {
       throw std::runtime_error("Invalid begin edge id");
     }
-    const GraphTile* begin_edge_tile = reader.GetGraphTile(graphid);
+    graph_tile_ptr begin_edge_tile = reader.GetGraphTile(graphid);
     if (begin_edge_tile == nullptr) {
       throw std::runtime_error("Begin tile is null");
     }
 
     // Process directed edge and info
     const DirectedEdge* de = begin_edge_tile->directededge(graphid);
-    const GraphTile* end_node_tile = reader.GetGraphTile(de->endnode());
+    graph_tile_ptr end_node_tile = reader.GetGraphTile(de->endnode());
     if (end_node_tile == nullptr) {
       throw std::runtime_error("End node tile is null");
     }
@@ -349,7 +349,7 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
           de_remaining_length < length_comparison(length, true)) {
 
         // Get seconds from beginning of the week accounting for any changes to timezone on the path
-        uint32_t second_of_week = kInvalidSecondsOfWeek;
+        uint32_t second_of_week = kConstrainedFlowSecondOfDay;
         if (origin_epoch != 0 && nodeinfo) {
           second_of_week =
               DateTime::second_of_week(origin_epoch + static_cast<uint32_t>(elapsed.secs),
@@ -364,7 +364,7 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
           elapsed.secs = shape[index].epoch_time() - shape[0].epoch_time();
 
         // Add begin edge
-        path_infos.emplace_back(mode, elapsed.secs, graphid, 0, elapsed.cost, false);
+        path_infos.emplace_back(mode, elapsed, graphid, 0, -1);
 
         // Set previous edge label
         prev_edge_label = {kInvalidLabel, graphid, de, {}, 0, 0, mode, 0, {}};
@@ -390,14 +390,14 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
           // Get the end edge and add transition time and partial time along
           // the destination edge.
           GraphId end_edge_graphid(end_edge.graph_id());
-          const GraphTile* end_edge_tile = reader.GetGraphTile(end_edge_graphid);
+          graph_tile_ptr end_edge_tile = reader.GetGraphTile(end_edge_graphid);
           if (end_edge_tile == nullptr) {
             throw std::runtime_error("End edge tile is null");
           }
           const DirectedEdge* end_de = end_edge_tile->directededge(end_edge_graphid);
 
           // Get seconds from beginning of the week accounting for any changes to timezone on the path
-          uint32_t second_of_week = kInvalidSecondsOfWeek;
+          uint32_t second_of_week = kConstrainedFlowSecondOfDay;
           if (origin_epoch != 0 && nodeinfo) {
             second_of_week =
                 DateTime::second_of_week(origin_epoch + static_cast<uint32_t>(elapsed.secs),
@@ -407,15 +407,15 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
           // get the cost of traversing the node and the remaining part of the edge
           auto& costing = mode_costing[static_cast<int>(mode)];
           nodeinfo = end_edge_tile->node(n->first);
-          elapsed +=
-              costing->TransitionCost(end_de, nodeinfo, prev_edge_label) +
-              costing->EdgeCost(end_de, end_edge_tile, second_of_week) * end_edge.percent_along();
+          auto transition_cost = costing->TransitionCost(end_de, nodeinfo, prev_edge_label);
+          elapsed += transition_cost + costing->EdgeCost(end_de, end_edge_tile, second_of_week) *
+                                           end_edge.percent_along();
           // overwrite time with timestamps
           if (options.use_timestamps())
             elapsed.secs = shape.back().epoch_time() - shape[0].epoch_time();
 
           // Add end edge
-          path_infos.emplace_back(mode, elapsed.secs, end_edge_graphid, 0, elapsed.cost, false);
+          path_infos.emplace_back(mode, elapsed, end_edge_graphid, 0, -1, transition_cost);
           return true;
         } else {
           // Did not find an edge that correlates with the trace, return false.
@@ -436,7 +436,7 @@ bool RouteMatcher::FormPath(const std::shared_ptr<DynamicCost>* mode_costing,
           elapsed.secs = shape.back().epoch_time() - shape[0].epoch_time();
 
         // Add end edge
-        path_infos.emplace_back(mode, elapsed.secs, GraphId(edge.graph_id()), 0, elapsed.cost, false);
+        path_infos.emplace_back(mode, elapsed, GraphId(edge.graph_id()), 0, -1);
         return true;
       }
     }

@@ -9,8 +9,6 @@
 #include <set>
 #include <thread>
 
-#include <boost/filesystem/operations.hpp>
-
 #include "baldr/datetime.h"
 #include "baldr/graphconstants.h"
 #include "baldr/graphid.h"
@@ -35,7 +33,7 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
   std::deque<GraphId> graphids;
 
   lock.lock();
-  const GraphTile* endnodetile = reader.GetGraphTile(n_graphId);
+  graph_tile_ptr endnodetile = reader.GetGraphTile(n_graphId);
   lock.unlock();
 
   const NodeInfo* n_info = endnodetile->node(n_graphId);
@@ -60,7 +58,7 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
 
       GraphId g_id(endnodetile->id().tileid(), endnodetile->id().level(), n_info->edge_index() + j);
 
-      if (de->edgeinfo_offset() != 0 && de->endnode() != prev_Node && g_id != avoidId &&
+      if (de->endnode() != prev_Node && g_id != avoidId &&
           !(de->IsTransitLine() || de->is_shortcut() || de->use() == Use::kTransitConnection ||
             de->use() == Use::kEgressConnection || de->use() == Use::kPlatformConnection)) {
         // get the edge info offset
@@ -116,7 +114,7 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
           uint32_t k = 0;
           while (k < n_info->transition_count()) {
             // only look at transition edges from this end node
-            const GraphTile* temp_endnodetile = endnodetile;
+            graph_tile_ptr temp_endnodetile = endnodetile;
             // Handle transitions - expand from the end node each transition
             const NodeTransition* trans = endnodetile->transition(n_info->transition_index() + k);
 
@@ -139,7 +137,7 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
                            tmp_n_info->edge_index() + l);
 
               // only look at non transition edges.
-              if (de->edgeinfo_offset() != 0 && de->endnode() != prev_Node && g_id != avoidId &&
+              if (de->endnode() != prev_Node && g_id != avoidId &&
                   !(de->IsTransitLine() || de->is_shortcut() ||
                     de->use() == Use::kTransitConnection || de->use() == Use::kEgressConnection ||
                     de->use() == Use::kPlatformConnection)) {
@@ -194,6 +192,9 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
               currentNode = n_graphId;
               prev_Node = GraphId();
             } else {
+              /*LOG_WARN("Could not recover restriction from way_id " +
+                       std::to_string(res_way_ids.front()) + " to way_id " +
+                       std::to_string(res_way_ids.back()));*/
               graphids.clear();
               return graphids;
             }
@@ -216,6 +217,9 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
             currentNode = n_graphId;
             prev_Node = GraphId();
           } else {
+            /*LOG_WARN("Could not recover restriction from way_id " +
+                     std::to_string(res_way_ids.front()) + " to way_id " +
+                     std::to_string(res_way_ids.back()));*/
             graphids.clear();
             return graphids;
           }
@@ -227,6 +231,8 @@ std::deque<GraphId> GetGraphIds(GraphId& n_graphId,
   }
 
   if (!bBeginFound) { // happens when opp edge is found and via a this node.
+    /*LOG_WARN("Could not recover restriction from way_id " + std::to_string(res_way_ids.front()) +
+             " to way_id " + std::to_string(res_way_ids.back()));*/
     graphids.clear();
   }
 
@@ -259,11 +265,11 @@ void build(const std::string& complex_restriction_from_file,
     GraphId tile_id = tilequeue.front();
     tilequeue.pop();
 
-    // Get a readable tile.If the tile is empty, skip it. Empty tiles are
+    // Get a readable tile. If the tile is empty, skip it. Empty tiles are
     // added where ways go through a tile but no end not is within the tile.
     // This allows creation of connectivity maps using the tile set,
-    const GraphTile* tile = reader.GetGraphTile(tile_id);
-    if (tile->header()->nodecount() == 0) {
+    graph_tile_ptr tile = reader.GetGraphTile(tile_id);
+    if (!tile) {
       lock.unlock();
       continue;
     }
@@ -606,16 +612,15 @@ void RestrictionBuilder::Build(const boost::property_tree::ptree& pt,
 
   boost::property_tree::ptree hierarchy_properties = pt.get_child("mjolnir");
   GraphReader reader(hierarchy_properties);
-  auto level = TileHierarchy::levels().rbegin();
-  for (; level != TileHierarchy::levels().rend(); ++level) {
+  for (auto tl = TileHierarchy::levels().rbegin(); tl != TileHierarchy::levels().rend(); ++tl) {
     // Create a randomized queue of tiles to work from
-    auto tile_level = level->second;
     std::deque<GraphId> tempqueue;
-    auto level_tiles = reader.GetTileSet(tile_level.level);
+    auto level_tiles = reader.GetTileSet(tl->level);
     for (const auto& tile_id : level_tiles) {
       tempqueue.emplace_back(tile_id);
     }
-    std::random_shuffle(tempqueue.begin(), tempqueue.end());
+    std::random_device rd;
+    std::shuffle(tempqueue.begin(), tempqueue.end(), std::mt19937(rd()));
     std::queue<GraphId> tilequeue(tempqueue);
 
     // An atomic object we can use to do the synchronization
@@ -624,12 +629,12 @@ void RestrictionBuilder::Build(const boost::property_tree::ptree& pt,
 
     std::vector<std::shared_ptr<std::thread>> threads(
         std::max(static_cast<unsigned int>(1),
-                 pt.get<unsigned int>("concurrency", std::thread::hardware_concurrency())));
+                 pt.get<unsigned int>("mjolnir.concurrency", std::thread::hardware_concurrency())));
     // Hold the results (DataQuality/stats) for the threads
     std::vector<std::promise<DataQuality>> results(threads.size());
 
     // Start the threads
-    LOG_INFO("Adding Restrictions at level " + std::to_string(tile_level.level));
+    LOG_INFO("Adding Restrictions at level " + std::to_string(tl->level));
     for (size_t i = 0; i < threads.size(); ++i) {
       threads[i].reset(new std::thread(build, std::cref(complex_from_restrictions_file),
                                        std::cref(complex_to_restrictions_file),

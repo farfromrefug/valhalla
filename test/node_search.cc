@@ -17,13 +17,12 @@
 namespace vm = valhalla::midgard;
 namespace vb = valhalla::baldr;
 
+#include "filesystem.h"
 #include "mjolnir/directededgebuilder.h"
 #include "mjolnir/graphtilebuilder.h"
 #include "mjolnir/graphvalidator.h"
-#include <boost/filesystem.hpp>
 
 namespace vj = valhalla::mjolnir;
-namespace bfs = boost::filesystem;
 
 namespace {
 
@@ -86,15 +85,14 @@ void graph_writer::write_tiles() {
 
     // write the bin data
     GraphTileBuilder::tweeners_t tweeners;
-    GraphTile reloaded(test_tile_dir, tile_id);
-    auto bins = GraphTileBuilder::BinEdges(&reloaded, tweeners);
-    GraphTileBuilder::AddBins(test_tile_dir, &reloaded, bins);
+    auto reloaded = GraphTile::Create(test_tile_dir, tile_id);
+    auto bins = GraphTileBuilder::BinEdges(reloaded, tweeners);
+    GraphTileBuilder::AddBins(test_tile_dir, reloaded, bins);
 
     // merge tweeners into global
     for (const auto& entry : tweeners) {
       auto status = all_tweeners.insert(entry);
       if (!status.second) {
-        auto tile_id = entry.first;
         const auto& bins = entry.second;
         auto itr = status.first;
 
@@ -108,8 +106,8 @@ void graph_writer::write_tiles() {
 
   for (const auto& entry : all_tweeners) {
     // re-open tiles to add tweeners back in.
-    vb::GraphTile tile(test_tile_dir, entry.first);
-    vj::GraphTileBuilder::AddBins(test_tile_dir, &tile, entry.second);
+    auto tile = vb::GraphTile::Create(test_tile_dir, entry.first);
+    vj::GraphTileBuilder::AddBins(test_tile_dir, tile, entry.second);
   }
 }
 
@@ -262,7 +260,7 @@ void graph_builder::write_tiles(uint8_t level) const {
       // make more complex edge geom so that there are 3 segments, affine
       // combination doesnt properly handle arcs but who cares
       edge_info_offset = tile.AddEdgeInfo(edge_index, e.first, e.second, 123, 456, 0, 55, shape,
-                                          {std::to_string(edge_index)}, 0, add);
+                                          {std::to_string(edge_index)}, {}, 0, add);
     }
     edge_builder.set_edgeinfo_offset(edge_info_offset);
 
@@ -274,8 +272,8 @@ void graph_builder::write_tiles(uint8_t level) const {
 
 void make_tile() {
   // make sure that all the old tiles are gone before trying to make new ones.
-  if (bfs::is_directory(test_tile_dir)) {
-    bfs::remove_all(test_tile_dir);
+  if (filesystem::is_directory(test_tile_dir)) {
+    filesystem::remove_all(test_tile_dir);
   }
 
   graph_builder builder;

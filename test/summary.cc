@@ -28,7 +28,7 @@ boost::property_tree::ptree get_conf() {
       "loki":{
         "actions":["route"],
         "logging":{"long_request": 100},
-        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "heading_tolerance": 60}
+        "service_defaults":{"minimum_reachability": 50,"radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "street_side_max_distance": 1000, "heading_tolerance": 60}
       },
       "thor":{"logging":{"long_request": 100}},
       "odin":{"logging":{"long_request": 100}},
@@ -44,7 +44,7 @@ boost::property_tree::ptree get_conf() {
         "bicycle": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50},
         "bus": {"max_distance": 5000000.0,"max_locations": 50,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
         "hov": {"max_distance": 5000000.0,"max_locations": 20,"max_matrix_distance": 400000.0,"max_matrix_locations": 50},
-        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time": 120},
+        "isochrone": {"max_contours": 4,"max_distance": 25000.0,"max_locations": 1,"max_time_contour": 120, "max_distance_contour":200},
         "max_avoid_locations": 50,"max_radius": 200,"max_reachability": 100,"max_alternates":2,
         "multimodal": {"max_distance": 500000.0,"max_locations": 50,"max_matrix_distance": 0.0,"max_matrix_locations": 0},
         "pedestrian": {"max_distance": 250000.0,"max_locations": 50,"max_matrix_distance": 200000.0,"max_matrix_locations": 50,"max_transit_walking_distance": 10000,"min_transit_walking_distance": 1},
@@ -91,7 +91,7 @@ TEST(Summary, test_time_summary) {
   const auto& leg = response.trip().routes(0).legs(0);
   EXPECT_EQ(
       leg.shape(),
-      "kbykbB{afxHWee@kAuh@{@qZmP{[_IsMaHoMgDcSu@mFM{@wDoIcAx@iR`LqHlE}IhFaShF{P{@eJAqL{MoNkLcRgSsUc^_IcPwIcUmOkf@qRss@sKig@{Po~@iM}|@wHe{@yCa_@s@{_@z@i^dEo_@nI}^lJcX~NoWhM{Npa@gYbk@yUro@_WnvAmn@~l@wVnc@kRhGcDnNaHxa@mShg@aUlqBq{@hdB_x@prDuyAt`Cy|@dZsKhWuLb|B_`Ajf@wOfgAy`@nr@q^bj@cY`q@qa@h]_UzZcTz`@i[tmAmbAfXwNp\\aPdPoAtTpAzUrJnNlKvMbQhM~WzKtZx\\p_BxQfbA~NjcAdJdj@|~@poEzn@fmC~DdPjKiJ~N_MfNuJdOkIfNkFv^kDjP`@fO`AdOtD~CnApCdApGhC~NxJpQhPbLdLfYjZlgAjnAh|@r{@zZnSje@x\\|aBfdAld@xZ~uBjtArKhHfkAhw@bWzNzJpF~IfGxLpIrLpInShQbPbR`NlTjP|ZzPhc@dKbZ`g@d{AbQnh@fXxv@vM`^j[~s@zQx]nMnTpRz[nh@pu@bVzZ|TtZt^rc@ra@vf@dYrZz`@h^l_@~W~]xSxyAxl@~|@j]b~Axm@xjAdd@zy@hZfgAra@nStJdJfIfElGtDpHfI|TvHfXrB`Mz@~ZGxb@{@hXcQ~qBm_@`vDcp@`aFoHxm@uE|SsFzX}Jjd@gIj\\oHlXqH|Z}DtQoDvS{ApLaCr\\UdE]vDGtCd@jEz@xCxBvDxHhBjo@nOr[jEdT~AbLYbGYdJeB`CY~R_FpWoKxHwDfeB_u@jViFrKm@xMvAvSdHxVdS`Xjd@bKhSlJfWvIna@`\\`zBxCjQhGhVpH`UpLpV|@lBvCpG~HnUjGfZzEld@zAna@dAva@Df_@aBpc@kB~^aCx^cAdKiBzKqBbMyClQwH`]aHxWqHbUy[rz@mE`L}O~`@zF|GtDdFxl@~{@zn@``Ani@`w@jUr_@hg@l~@`{@faBh\\hp@fYhg@`Wbd@xGnL}OvnAoCtd@yBbOaRzuAm@nDqCfM_C~MeAlFsAlKs@pHaCtUWpJwChXqBdH}@jFUjFOzHt@nHvCpK~DtGlDlC`XdO~CzBG~T}Jh}@yVaLqBbAsFhh@G`FOt`@e@xC");
+      "ibykbB}afxHWge@oAqh@y@sZoPy[{HuMeHmMgDgSq@iFS{@sDsIgAz@iR`LoHlEyIjFcSfF{P}@gJAmL{MqNkLaReSuUc^cIcPsIeUoOkf@sRqs@mKgg@_Qs~@kMy|@wHi{@sC__@y@{_@|@g^fEs_@lI}^lJaX|NqWjMyNpa@gYbk@yUto@_WnvAmn@~l@uVnc@mRdGcDnNaHza@kSfg@cUjqBs{@pdB}w@jrDsyAv`C}|@dZqKlWuL~{B}_Ajf@yOhgAy`@lr@q^fj@cYzp@qa@j]aU|ZaTv`@g[vmAobAjXyNp\\_PbPmAtTnA|UrJjNjKzMbQfM`XzKtZz\\p_BtQfbA~NhcAdJfj@~~@roEvn@dmC~DdPpKiJ~N_MdNsJdOkIbNmFx^iDlP\\hOdAdOpDzCnApChAnGhCbOvJlQjPdL`LfYnZpgAhnAd|@t{@xZlSne@x\\xaBfdAnd@xZ|uBjtAvKjHdkAfw@fWzNvJrF~IdGxLrIpLlIrSjQ`PdRbNlTlPzZvPjc@fK`Zbg@d{A~Pph@hXvv@tMb^j[zs@~Qz]jMnTtRx[nh@pu@~UzZ`UtZr^tc@na@tf@fYrZx`@j^n_@`X~]tSzyAzl@~|@l]~}Avm@zjAdd@|y@hZbgApa@rStJbJjIjElGpDnHhIzTxHjXrB`Mv@zZIzb@u@hXeQ~qBm_@`vDap@baFsHvm@sE|SsFzX_Kjd@eIj\\mHnXwHzZ{DrQqDzS{ApLyBp\\]dEYtDGtCb@jE|@zCxBxDtHfBno@pOr[hEbT|A`LWbGWhJeB`C]`S{EpWqKtHyDjeB}t@hViFpKk@|MtAnSdH~VdS~Wld@dKfSnJfWtIpa@b\\~yBrChQhGlVrH`UpLpV~@jBrCnGdInUdGjZ|Ejd@|Ala@dAxa@@d_@{Apc@kB`_@aCx^iAfKiBzKqB~LwCnQwHb]cHvWiHdU}[nz@kEbLaP`a@|F|GxDdFrl@~{@|n@``Ahi@~v@pUt_@dg@h~@b{@jaBj\\dp@bYjg@fWdd@vGnL}OtnAqCtd@uB`OaR~uAq@lDoCfMaC`NaAjFsAjKu@pHcCxUSlJ{ClXmB`H}@nF[fFIzHp@nH|CtKxDrGpDlC~WdO|CxBE~TaKh}@sVaLyBbAsFlh@A`FMt`@c@xC");
 
   // loop over all routes all legs
   auto trip_route = response.trip().routes().begin();
@@ -107,7 +107,7 @@ TEST(Summary, test_time_summary) {
         // check the transition times should be non-zero and less than equal to the maneuver time
         double transition_time = 0;
         for (auto n = maneuver.begin_path_index(); n < maneuver.end_path_index(); ++n) {
-          transition_time += trip_leg->node(n).transition_time();
+          transition_time += trip_leg->node(n).cost().transition_cost().seconds();
         }
         EXPECT_LE(transition_time, maneuver.time());
         // check the on edge times plus the transition times add up to the maneuver time
@@ -120,13 +120,13 @@ TEST(Summary, test_time_summary) {
         accumulated_edge_time += edge_time_ms / 1000.0;
       }
       // make sure the end of the trip path is the same as the legs
-      EXPECT_EQ(trip_leg->node().rbegin()->elapsed_time(), leg.summary().time());
+      EXPECT_EQ(trip_leg->node().rbegin()->cost().elapsed_cost().seconds(), leg.summary().time());
       // make sure the maneuvers add up to the leg as well
       EXPECT_EQ(accumulated_time, leg.summary().time());
       // we should have had some transition costs along the way
       EXPECT_GT(accumulated_transition_time, 0);
       // we should have the edge time plus the transition time add up to the leg time
-      EXPECT_NEAR(accumulated_edge_time + accumulated_transition_time, accumulated_time, .15);
+      EXPECT_NEAR(accumulated_edge_time + accumulated_transition_time, accumulated_time, .16);
       ++trip_leg;
     }
     ++trip_route;
@@ -146,7 +146,7 @@ TEST(Summary, test_time_summary) {
       accumulated_time += maneuver["time"].GetDouble();
     }
     // make sure the end of the trip path is the same as the legs
-    EXPECT_NEAR(accumulated_time, leg["summary"].GetObject()["time"].GetDouble(), .01);
+    EXPECT_NEAR(accumulated_time, leg["summary"].GetObject()["time"].GetDouble(), .02);
   }
 
   // get the osrm json

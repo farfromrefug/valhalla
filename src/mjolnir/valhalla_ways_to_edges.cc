@@ -8,7 +8,6 @@
 #include "config.h"
 
 #include "baldr/rapidjson_utils.h"
-#include <boost/filesystem/operations.hpp>
 #include <boost/optional.hpp>
 #include <boost/program_options.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -19,13 +18,14 @@
 #include "baldr/graphreader.h"
 #include "baldr/graphtile.h"
 #include "baldr/tilehierarchy.h"
+#include "filesystem.h"
 
 namespace bpo = boost::program_options;
 
 using namespace valhalla::baldr;
 using namespace valhalla::midgard;
 
-boost::filesystem::path config_file_path;
+filesystem::path config_file_path;
 std::vector<std::string> input_files;
 
 // Structure holding an edge Id and forward flag
@@ -51,8 +51,7 @@ bool ParseArguments(int argc, char* argv[]) {
 
   options.add_options()("help,h", "Print this help message.")("version,v",
                                                               "Print the version of this software.")(
-      "config,c",
-      boost::program_options::value<boost::filesystem::path>(&config_file_path)->required(),
+      "config,c", boost::program_options::value<filesystem::path>(&config_file_path)->required(),
       "Path to the json configuration file.")
       // positional arguments
       ("input_files",
@@ -84,7 +83,7 @@ bool ParseArguments(int argc, char* argv[]) {
   }
 
   if (vm.count("config")) {
-    if (boost::filesystem::is_regular_file(config_file_path)) {
+    if (filesystem::is_regular_file(config_file_path)) {
       return true;
     } else {
       std::cerr << "Configuration file is required\n\n" << options << "\n\n";
@@ -108,8 +107,8 @@ int main(int argc, char** argv) {
 
   // Get something we can use to fetch tiles
   auto tile_properties = pt.get_child("mjolnir");
-  auto local_level = TileHierarchy::levels().rbegin()->second.level;
-  auto tiles = TileHierarchy::levels().rbegin()->second.tiles;
+  auto local_level = TileHierarchy::levels().back().level;
+  auto tiles = TileHierarchy::levels().back().tiles;
 
   // Create an unordered map of OSM ways Ids and their associated graph edges
   std::unordered_map<uint64_t, std::vector<EdgeAndDirection>> ways_edges;
@@ -119,11 +118,11 @@ int main(int argc, char** argv) {
   for (uint32_t id = 0; id < tiles.TileCount(); id++) {
     // If tile exists add it to the queue
     GraphId edge_id(id, local_level, 0);
-    if (!reader.DoesTileExist(tile_properties, edge_id)) {
+    if (!reader.DoesTileExist(edge_id)) {
       continue;
     }
 
-    const GraphTile* tile = reader.GetGraphTile(edge_id);
+    graph_tile_ptr tile = reader.GetGraphTile(edge_id);
     for (uint32_t n = 0; n < tile->header()->directededgecount(); n++, ++edge_id) {
       const DirectedEdge* edge = tile->directededge(edge_id);
       if (edge->IsTransitLine() || edge->use() == Use::kTransitConnection ||

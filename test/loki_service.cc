@@ -3,6 +3,9 @@
 
 #include "baldr/rapidjson_utils.h"
 #include "midgard/logging.h"
+#include "proto/api.pb.h"
+#include "proto_conversions.h"
+
 #include <boost/property_tree/ptree.hpp>
 #include <prime_server/http_protocol.hpp>
 #include <prime_server/prime_server.hpp>
@@ -327,6 +330,42 @@ const std::vector<std::pair<uint16_t, std::string>> osrm_responses{
     {400,
      R"({"code":"InvalidValue","message":"The successfully parsed query parameters are invalid."})"}};
 
+boost::property_tree::ptree make_config(
+    const std::string& actions =
+        R"([ "locate", "route", "sources_to_targets", "optimized_route", "isochrone", "trace_route", "trace_attributes" ])") {
+  boost::property_tree::ptree config;
+  std::stringstream json;
+  json << R"({
+      "meili": { "default": { "breakage_distance": 2000} },
+      "mjolnir": { "tile_dir": "test/tiles" },
+      "loki": { "actions": )";
+  json << actions;
+  json << R"(,
+                  "logging": { "long_request": 100.0 },
+                  "service": { "proxy": "ipc:///tmp/test_loki_proxy" },
+                "service_defaults": { "minimum_reachability": 50, "radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "street_side_max_distance": 1000, "heading_tolerance": 60} },
+      "thor": { "service": { "proxy": "ipc:///tmp/test_thor_proxy" } },
+      "httpd": { "service": { "loopback": "ipc:///tmp/test_loki_results", "interrupt": "ipc:///tmp/test_loki_interrupt" } },
+      "service_limits": {
+        "skadi": { "max_shape": 100, "min_resample": "10"},
+        "auto": { "max_distance": 5000000.0, "max_locations": 20,
+                  "max_matrix_distance": 400000.0, "max_matrix_locations": 50 },
+        "pedestrian": { "max_distance": 250000.0, "max_locations": 50,
+                        "max_matrix_distance": 200000.0, "max_matrix_locations": 50,
+                        "min_transit_walking_distance": 1, "max_transit_walking_distance": 10000 },
+        "isochrone": { "max_contours": 4, "max_time_contour": 120, "max_distance_contour":200, "max_distance": 25000, "max_locations": 1},
+        "trace": { "max_best_paths": 4, "max_best_paths_shape": 100, "max_distance": 200000.0, "max_gps_accuracy": 100.0, "max_search_radius": 100, "max_shape": 16000 },
+        "max_avoid_locations": 0,
+        "max_reachability": 100,
+        "max_radius": 200,
+        "max_alternates":2
+      },
+      "costing_directions_options": { "auto": {}, "pedestrian": {} }
+    })";
+  rapidjson::read_json(json, config);
+  return config;
+}
+
 zmq::context_t context;
 void start_service() {
   // server
@@ -342,33 +381,7 @@ void start_service() {
   proxy.detach();
 
   // make the config file
-  boost::property_tree::ptree config;
-  std::stringstream json;
-  json << R"({
-      "mjolnir": { "tile_dir": "test/tiles" },
-      "loki": { "actions": [ "locate", "route", "sources_to_targets", "optimized_route", "isochrone", "trace_route", "trace_attributes" ],
-                  "logging": { "long_request": 100.0 },
-                  "service": { "proxy": "ipc:///tmp/test_loki_proxy" },
-                "service_defaults": { "minimum_reachability": 50, "radius": 0,"search_cutoff": 35000, "node_snap_tolerance": 5, "street_side_tolerance": 5, "heading_tolerance": 60} },
-      "thor": { "service": { "proxy": "ipc:///tmp/test_thor_proxy" } },
-      "httpd": { "service": { "loopback": "ipc:///tmp/test_loki_results", "interrupt": "ipc:///tmp/test_loki_interrupt" } },
-      "service_limits": {
-        "skadi": { "max_shape": 100, "min_resample": "10"},
-        "auto": { "max_distance": 5000000.0, "max_locations": 20,
-                  "max_matrix_distance": 400000.0, "max_matrix_locations": 50 },
-        "pedestrian": { "max_distance": 250000.0, "max_locations": 50,
-                        "max_matrix_distance": 200000.0, "max_matrix_locations": 50,
-                        "min_transit_walking_distance": 1, "max_transit_walking_distance": 10000 },
-        "isochrone": { "max_contours": 4, "max_time": 120, "max_distance": 25000, "max_locations": 1},
-        "trace": { "max_best_paths": 4, "max_best_paths_shape": 100, "max_distance": 200000.0, "max_gps_accuracy": 100.0, "max_search_radius": 100, "max_shape": 16000 },
-        "max_avoid_locations": 0,
-        "max_reachability": 100,
-        "max_radius": 200,
-        "max_alternates":2
-      },
-      "costing_directions_options": { "auto": {}, "pedestrian": {} }
-    })";
-  rapidjson::read_json(json, config);
+  auto config = make_config();
 
   // service worker
   std::thread worker(valhalla::loki::run_service, config);
@@ -427,7 +440,37 @@ TEST(LokiService, test_osrm_failure_requests) {
   run_requests(osrm_requests, osrm_responses);
 }
 
-// todo: test_success_requests??
+TEST(LokiService, test_actions_whitelist) {
+  http_request_info_t info{};
+
+  // check that you only get in if your on the configured list
+  for (auto action = Options::Action_MIN; action < Options::Action_ARRAYSIZE;
+       action = static_cast<Options::Action>(static_cast<int>(action) + 1)) {
+
+    auto wrong_action = static_cast<Options::Action>(static_cast<int>(action) +
+                                                     (action == Options::Action_MAX ? -1 : 1));
+    auto whitelist = R"([")" + Options_Action_Enum_Name(wrong_action) + R"("])";
+    auto config = make_config(whitelist);
+    loki::loki_worker_t worker(config);
+    http_request_t request(method_t::GET, "/" + Options_Action_Enum_Name(action));
+    auto req_str = request.to_string();
+    auto msg = zmq::message_t{reinterpret_cast<void*>(&req_str.front()), req_str.size(),
+                              [](void*, void*) {}};
+    auto result = worker.work({msg}, reinterpret_cast<void*>(&info), []() {});
+
+    // failed to find that action in the whitelist
+    EXPECT_TRUE(result.messages.front().find("Try any") != std::string::npos);
+
+    http_request_t request1(method_t::GET, "/" + Options_Action_Enum_Name(wrong_action));
+    req_str = request1.to_string();
+    msg = zmq::message_t{reinterpret_cast<void*>(&req_str.front()), req_str.size(),
+                         [](void*, void*) {}};
+    result = worker.work({msg}, reinterpret_cast<void*>(&info), []() {});
+
+    // found the action this time but failed for no locations
+    EXPECT_TRUE(result.messages.front().find("Try any") == std::string::npos);
+  }
+}
 
 } // namespace
 

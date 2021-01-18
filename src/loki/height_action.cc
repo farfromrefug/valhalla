@@ -53,7 +53,10 @@ std::vector<PointLL> loki_worker_t::init_height(Api& request) {
       }
       // re-encode it for display if they sent it encoded
       if (options.has_encoded_polyline()) {
-        options.set_encoded_polyline(midgard::encode(shape));
+        // Default to 6 digit precision unless polyline5 is specified
+        // NOTE: geojson is NOT support yet for height action
+        int precision = options.shape_format() == polyline5 ? 1e5 : 1e6;
+        options.set_encoded_polyline(midgard::encode(shape, precision));
       }
       resampled = true;
     }
@@ -76,15 +79,15 @@ std::vector<PointLL> loki_worker_t::init_height(Api& request) {
 }
 */
 std::string loki_worker_t::height(Api& request) {
+  // time this whole method and save that statistic
+  auto _ = measure_scope_time(request, "loki_worker_t::height");
+
   auto shape = init_height(request);
   // get the elevation of each posting
   std::vector<double> heights = sample.get_all(shape);
-  if (!request.options().do_not_track()) {
-    valhalla::midgard::logging::Log("sample_count::" + std::to_string(shape.size()), " [ANALYTICS] ");
-  }
 
   // get the distances between the postings if desired
-  std::vector<float> ranges;
+  std::vector<double> ranges;
   if (request.options().range()) {
     ranges.reserve(shape.size());
     ranges.emplace_back(0);

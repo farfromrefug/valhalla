@@ -10,6 +10,7 @@
 
 #include <valhalla/midgard/aabb2.h>
 #include <valhalla/midgard/constants.h>
+#include <valhalla/midgard/ellipse.h>
 
 namespace valhalla {
 namespace midgard {
@@ -170,7 +171,7 @@ public:
    * @return  Returns the tile Id. -1 (error is returned if the x,y is
    *          outside the bounding box of the tiling sytem).
    */
-  int32_t TileId(const float y, const float x) const {
+  int32_t TileId(const typename coord_t::first_type y, const typename coord_t::first_type x) const {
     // Return -1 if totally outside the extent.
     if (y < tilebounds_.miny() || x < tilebounds_.minx() || y > tilebounds_.maxy() ||
         x > tilebounds_.maxx()) {
@@ -334,13 +335,22 @@ public:
   };
 
   /**
-   * Get the list of tiles that lie within the specified bounding box.
-   * The method finds the center tile and spirals out by finding neighbors
-   * and recursively checking if tile is inside and checking/adding
-   * neighboring tiles
+   * Get the list of tiles that lie within the specified bounding box. Since tiles as well as the
+   * bounding box are both aligned to the axes we can simply find tiles by iterating over rows
+   * and columns of tiles from the minimum to maximum.
    * @param  boundingbox  Bounding box
+   * @return Returns a list of tiles that are within or intersect the bounding box.
    */
   std::vector<int32_t> TileList(const AABB2<coord_t>& boundingbox) const;
+
+  /**
+   * Get the list of tiles that lie within the specified ellipse. The method finds the tile
+   * at the ellipse center. It successively finds neighbors and checks if they are inside or
+   * intersect with the ellipse.
+   * @param  ellipse  Ellipse
+   * @return Returns a list of tiles that are within or intersect the ellipse.
+   */
+  std::vector<int32_t> TileList(const Ellipse<coord_t>& ellipse) const;
 
   /**
    * Color a "connectivity map" starting with a sparse map of uncolored tiles.
@@ -379,7 +389,8 @@ public:
    * @param seed   the point at for which we measure 'closeness'
    * @return       the functor to be called
    */
-  std::function<std::tuple<int32_t, unsigned short, float>()> ClosestFirst(const coord_t& seed) const;
+  std::function<std::tuple<int32_t, unsigned short, double>()>
+  ClosestFirst(const coord_t& seed) const;
 
 protected:
   // Does the tile bounds wrap in the x direction (e.g. at longitude = 180)
