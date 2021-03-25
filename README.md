@@ -61,7 +61,9 @@ Documentation is stored in the `docs/` folder in this GitHub repository. It can 
 
 ## Installation
 
-### Get Valhalla from Personal Package Archive (PPA)
+### [DEPRECATED] Get Valhalla from Personal Package Archive (PPA)
+
+NOTICE: Since we moved to cmake build systems we haven't updated our debian packaging scripts. Because of that the packages in the PPA are very very old. Once we get time to correct this we'll remove this notice but until then we recommend building from source or using docker.
 
 If you are running Ubuntu (trusty or xenial) Valhalla can be installed quickly and easily via PPA. Try the following:
 
@@ -89,8 +91,6 @@ if [[ $(python -c "print(int($DISTRIB_RELEASE > 15))") > 0 ]]; then sudo apt-get
 #if you plan to compile with python bindings, see below for more info
 sudo apt-get install -y python-all-dev
 ```
-
-For instructions on installing Valhalla on Ubuntu 18.04.x see this [script](scripts/Ubuntu_Bionic_Install.sh).
 
 To install on macOS, you need to install its dependencies with [Homebrew](http://brew.sh):
 
@@ -163,13 +163,19 @@ It's recommended to work with the following toolset:
 1. Install the following packages with `vcpkg` and your platform triplet (e.g. `x64-windows`). Note, you can remove all packages after `zlib` in `.\.vcpkg_deps.txt` if you don't want to build `TOOLS` & `DATA_TOOLS`:
 ```
 # Basic packages
-C:\path\to\vcpkg.exe --triplet x64-windows "@.vcpkg_deps.txt"
+git -C C:\path\to\vcpkg checkout f4bd6423
+cd C:\path\to\project
+C:\path\to\vcpkg.exe --triplet x64-windows install "@.vcpkg_deps.txt"
 ```
 2. Let CMake configure the build with the required modules enabled. **Note**, you have to manually link LuaJIT for some reason, e.g. the final command for `x64` could look like
 ```
 "C:\Program Files\CMake\bin\cmake.EXE" --no-warn-unused-cli -DENABLE_TOOLS=ON -DENABLE_DATA_TOOLS=ON -DENABLE_PYTHON_BINDINGS=ON -DENABLE_HTTP=ON -DENABLE_CCACHE=OFF -DENABLE_SERVICES=OFF -DENABLE_BENCHMARKS=OFF -DENABLE_TESTS=OFF -DLUA_LIBRARIES=path\to\vcpkg\installed\x64-windows\lib\lua51.lib -DLUA_INCLUDE_DIR=path\to\vcpkg\installed\x64-windows\include\luajit -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_TOOLCHAIN_FILE=path\to\vcpkg\scripts\buildsystems\vcpkg.cmake -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -Hpath/to/project -Bpath/to/project/build -G "Visual Studio 16 2019" -T host=x64 -A x64
 ```
 3. Run the build for all targets.
+```
+cd C:\path\to\project 
+cmake -B build .
+```
 
 ## Running
 

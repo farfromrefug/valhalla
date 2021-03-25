@@ -31,8 +31,9 @@ class TimeDepForward : public PathAlgorithm {
 public:
   /**
    * Constructor.
+   * @param config A config object of key, value pairs
    */
-  TimeDepForward();
+  explicit TimeDepForward(const boost::property_tree::ptree& config = {});
 
   /**
    * Destructor
@@ -176,6 +177,7 @@ protected:
 
   // Vector of edge labels (requires access by index).
   std::vector<sif::EdgeLabel> edgelabels_;
+  uint32_t max_reserved_labels_count_;
 
   // Edge status. Mark edges that are in adjacency list or settled.
   EdgeStatus edgestatus_;
@@ -185,7 +187,7 @@ protected:
 
 private:
   // Adjacency list - approximate double bucket sort
-  std::shared_ptr<baldr::DoubleBucketQueue<sif::EdgeLabel>> adjacencylist_;
+  baldr::DoubleBucketQueue<sif::EdgeLabel> adjacencylist_;
 };
 
 /**
@@ -198,8 +200,9 @@ class TimeDepReverse : public TimeDepForward {
 public:
   /**
    * Constructor.
+   * @param config A config object of key, value pairs
    */
-  TimeDepReverse();
+  explicit TimeDepReverse(const boost::property_tree::ptree& config = {});
 
   /**
    * Destructor
@@ -247,7 +250,7 @@ protected:
   std::vector<sif::BDEdgeLabel> edgelabels_rev_;
 
   // Adjacency list - approximate double bucket sort
-  std::shared_ptr<baldr::DoubleBucketQueue<sif::BDEdgeLabel>> adjacencylist_rev_;
+  baldr::DoubleBucketQueue<sif::BDEdgeLabel> adjacencylist_rev_;
 
   /**
    * Initializes the hierarchy limits, A* heuristic, and adjacency list.
@@ -324,6 +327,7 @@ protected:
    *          directed edges along the path - ordered from origin to
    *          destination - along with travel modes and elapsed time.
    */
+  using TimeDepForward::FormPath;
   std::vector<PathInfo> FormPath(baldr::GraphReader& graphreader, const uint32_t dest);
 };
 

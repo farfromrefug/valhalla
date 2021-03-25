@@ -134,17 +134,17 @@ struct candidate_t {
     // 10 degrees on either side is considered to be straight ahead
     constexpr float angle_tolerance = 10.f;
 
-    // check which side the point falls in:
-    // If angle_diff is between 10 and 170 it's on the right side,
-    // if angle_diff is between 190 and 350 it's on the left side,
-    // otherwise it's practically straight ahead or behind.
-    //
-    //       \    L    /
-    //        \       /
-    //  - - - - - x - - - - -
-    //        /       \
-    //       /    R    \
-    //
+    /* check which side the point falls in:
+       If angle_diff is between 10 and 170 it's on the right side,
+       if angle_diff is between 190 and 350 it's on the left side,
+       otherwise it's practically straight ahead or behind.
+
+             \    L    /
+              \       /
+        - - - - - x - - - - -
+              /       \
+             /    R    \
+    */
     if (angle_diff > angle_tolerance && angle_diff < (180.f - angle_tolerance)) {
       return PathLocation::SideOfStreet::RIGHT;
     } else if (angle_diff > (180.f + angle_tolerance) && angle_diff < (360.f - angle_tolerance)) {
@@ -295,7 +295,7 @@ struct bin_handler_t {
         // get some info about this edge and the opposing
         GraphId id = tile->id();
         id.set_id(node->edge_index() + (edge - start_edge));
-        auto info = tile->edgeinfo(edge->edgeinfo_offset());
+        auto info = tile->edgeinfo(edge);
         // calculate the heading of the snapped point to the shape for use in heading filter
         size_t index = edge->forward() ? 0 : info.shape().size() - 2;
         float angle =
@@ -407,7 +407,7 @@ struct bin_handler_t {
       auto opposing_edge_id = reader.GetOpposingEdgeId(candidate.edge_id, other_edge, other_tile);
 
       if (other_edge && costing->Allowed(other_edge, other_tile)) {
-        auto reach = get_reach(opposing_edge_id, other_edge);
+        reach = get_reach(opposing_edge_id, other_edge);
         PathLocation::PathEdge other_path_edge{opposing_edge_id, 1 - length_ratio, candidate.point,
                                                distance,         flip_side(side),  reach.outbound,
                                                reach.inbound};
@@ -527,7 +527,7 @@ struct bin_handler_t {
       // a trivial half plane test as maybe a single dot product and comparison?
 
       // get some shape of the edge
-      auto edge_info = std::make_shared<const EdgeInfo>(tile->edgeinfo(edge->edgeinfo_offset()));
+      auto edge_info = std::make_shared<const EdgeInfo>(tile->edgeinfo(edge));
       auto shape = edge_info->lazy_shape();
       PointLL v;
       if (!shape.empty()) {

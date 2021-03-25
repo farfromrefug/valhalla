@@ -124,6 +124,9 @@ std::list<Maneuver> ManeuversBuilder::Build() {
   // Must happen after updating maneuver placement for internal edges
   CollapseSmallEndRampFork(maneuvers);
 
+  // Collapse merge maneuvers to reduce obvious instructions
+  CollapseMergeManeuvers(maneuvers);
+
   // Process the turn lanes. Must happen after updating maneuver placement for internal edges so we
   // activate the correct lanes.
   ProcessTurnLanes(maneuvers);
@@ -2558,6 +2561,19 @@ bool ManeuversBuilder::IsTurnChannelManeuverCombinable(std::list<Maneuver>::iter
 
     Turn::Type new_turn_type = Turn::GetType(new_turn_degree);
 
+    // Turn channel cannot exceed kMaxTurnChannelLength (200m)
+    // and turn channel cannot have forward traversable intersecting edge
+    auto node = trip_path_->GetEnhancedNode(next_man->begin_node_index());
+    bool common_turn_channel_criteria =
+        ((curr_man->length(Options::kilometers) <= (kMaxTurnChannelLength * kKmPerMeter)) &&
+         !node->HasForwardTraversableIntersectingEdge(curr_man->end_heading(),
+                                                      curr_man->travel_mode()));
+
+    // Verify common turn channel criteria
+    if (!common_turn_channel_criteria) {
+      return false;
+    }
+
     // Process simple right turn channel
     // Combineable if begin of turn channel is relative right
     // and next maneuver is not relative left direction
@@ -2759,6 +2775,11 @@ void ManeuversBuilder::ProcessRoundabouts(std::list<Maneuver>& maneuvers) {
           // calculate correct turn angles when exit roundabout maneuver is
           // suppressed
           curr_man->set_roundabout_exit_begin_heading(next_man->begin_heading());
+
+          // Store the next maneuver's turn degree. This is where
+          // we store the turn angles when exit roundabout maneuver is
+          // suppressed
+          curr_man->set_roundabout_exit_turn_degree(next_man->turn_degree());
 
           // Set the traversable_outbound_intersecting_edge booleans
           curr_man->set_has_left_traversable_outbound_intersecting_edge(
@@ -3416,6 +3437,56 @@ void ManeuversBuilder::CollapseSmallEndRampFork(std::list<Maneuver>& maneuvers) 
       curr_man = next_man;
       ++next_man;
     }
+  }
+}
+
+void ManeuversBuilder::CollapseMergeManeuvers(std::list<Maneuver>& maneuvers) {
+  // Set current maneuver
+  auto curr_man = maneuvers.begin();
+
+  // Set next maneuver
+  auto next_man = maneuvers.begin();
+  if (next_man != maneuvers.end()) {
+    ++next_man;
+  }
+
+  // Walk the maneuvers to find merge maneuvers
+  while (next_man != maneuvers.end()) {
+
+    // If found, collapse the merge maneuver
+    if (curr_man->ramp() && next_man->IsMergeType() && !curr_man->has_collapsed_merge_maneuver()) {
+      // Disable the "to stay on" flag if not the same street names
+      if (curr_man->to_stay_on() && !(next_man->HasSameNames(&(*curr_man), true))) {
+        curr_man->set_to_stay_on(false);
+      }
+
+      // Use the merge maneuver street names
+      if (next_man->HasStreetNames()) {
+        curr_man->set_street_names(next_man->street_names().clone());
+      }
+
+      // Use merge maneuver guide signs
+      if (!curr_man->HasSigns()) {
+        // Assign guide branch signs - if they exist
+        if (next_man->HasGuideBranchSign()) {
+          *(curr_man->mutable_signs()->mutable_guide_branch_list()) =
+              next_man->signs().guide_branch_list();
+        }
+
+        // Assign guide branch signs - if they exist
+        if (next_man->HasGuideTowardSign()) {
+          *(curr_man->mutable_signs()->mutable_guide_toward_list()) =
+              next_man->signs().guide_toward_list();
+        }
+      }
+
+      // Combine the maneuvers and set the "has_collapsed_merge_maneuver" attribute
+      next_man = CombineManeuvers(maneuvers, curr_man, next_man);
+      curr_man->set_has_collapsed_merge_maneuver(true);
+    }
+    // on to the next maneuver...
+    curr_man = next_man;
+    ++next_man;
   }
 }
 

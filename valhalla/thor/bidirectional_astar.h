@@ -43,8 +43,9 @@ class BidirectionalAStar : public PathAlgorithm {
 public:
   /**
    * Constructor.
+   * @param config A config object of key, value pairs
    */
-  BidirectionalAStar();
+  explicit BidirectionalAStar(const boost::property_tree::ptree& config = {});
 
   /**
    * Destructor
@@ -108,18 +109,29 @@ protected:
   // Vector of edge labels (requires access by index).
   std::vector<sif::BDEdgeLabel> edgelabels_forward_;
   std::vector<sif::BDEdgeLabel> edgelabels_reverse_;
+  uint32_t max_reserved_labels_count_;
 
   // Adjacency list - approximate double bucket sort
-  std::shared_ptr<baldr::DoubleBucketQueue<sif::BDEdgeLabel>> adjacencylist_forward_;
-  std::shared_ptr<baldr::DoubleBucketQueue<sif::BDEdgeLabel>> adjacencylist_reverse_;
+  baldr::DoubleBucketQueue<sif::BDEdgeLabel> adjacencylist_forward_;
+  baldr::DoubleBucketQueue<sif::BDEdgeLabel> adjacencylist_reverse_;
 
   // Edge status. Mark edges that are in adjacency list or settled.
   EdgeStatus edgestatus_forward_;
   EdgeStatus edgestatus_reverse_;
 
   // Best candidate connection and threshold to extend search.
-  float threshold_;
+  float cost_threshold_;
+  uint32_t iterations_threshold_;
+  uint32_t desired_paths_count_;
   std::vector<CandidateConnection> best_connections_;
+
+  // Extends search in one direction if the other direction exhausted, but only if the non-exhausted
+  // end started on a not_thru or closed (due to live-traffic) edge
+  bool extended_search_;
+  // Stores the pruning state at origin & destination. Its true if _any_ of the candidate edges at
+  // these locations has pruning turned off (pruning is off if starting from a closed or not_thru
+  // edge)
+  bool pruning_disabled_at_origin_, pruning_disabled_at_destination_;
 
   /**
    * Initialize the A* heuristic and adjacency lists for both the forward
@@ -231,6 +243,8 @@ protected:
    * @param   options      Controls whether or not we get alternatives
    * @param   origin       The origin location
    * @param   destination  The destination location
+   * @param   time_info    What time is it when we start the route
+   * @param   invariant    Static date_time, dont offset the time as the path lengthens
    * @return  Returns the path infos, a list of GraphIds representing the
    *          directed edges along the path - ordered from origin to
    *          destination - along with travel modes and elapsed time.
@@ -238,7 +252,9 @@ protected:
   std::vector<std::vector<PathInfo>> FormPath(baldr::GraphReader& graphreader,
                                               const Options& options,
                                               const valhalla::Location& origin,
-                                              const valhalla::Location& dest);
+                                              const valhalla::Location& dest,
+                                              const baldr::TimeInfo& time_info,
+                                              const bool invariant);
 };
 
 // This function checks if the path formed by the two expanding trees

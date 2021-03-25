@@ -12,29 +12,31 @@ namespace valhalla {
 namespace thor {
 
 // TODO - compute initial label count based on estimated route length
-constexpr uint64_t kInitialEdgeLabelCount = 500000;
+constexpr uint32_t kInitialEdgeLabelCount = 500000;
 
 // Number of iterations to allow with no convergence to the destination
-constexpr uint32_t kMaxIterationsWithoutConvergence = 800000;
+constexpr uint32_t kMaxIterationsWithoutConvergence = 1800000;
 
 // Default constructor
-TimeDepReverse::TimeDepReverse() : TimeDepForward() {
+TimeDepReverse::TimeDepReverse(const boost::property_tree::ptree& config) : TimeDepForward(config) {
   mode_ = TravelMode::kDrive;
   travel_type_ = 0;
-  adjacencylist_rev_ = nullptr;
   max_label_count_ = std::numeric_limits<uint32_t>::max();
   access_mode_ = kAutoAccess;
 }
 
 // Destructor
 TimeDepReverse::~TimeDepReverse() {
-  Clear();
 }
 
 void TimeDepReverse::Clear() {
   TimeDepForward::Clear();
+  if (edgelabels_rev_.size() > max_reserved_labels_count_) {
+    edgelabels_rev_.resize(max_reserved_labels_count_);
+    edgelabels_rev_.shrink_to_fit();
+  }
   edgelabels_rev_.clear();
-  adjacencylist_rev_.reset();
+  adjacencylist_rev_.clear();
 }
 
 // Initialize prior to finding best path
@@ -55,8 +57,7 @@ void TimeDepReverse::Init(const midgard::PointLL& origll, const midgard::PointLL
   // Set bucket size and cost range based on DynamicCost.
   uint32_t bucketsize = costing_->UnitSize();
   float range = kBucketCount * bucketsize;
-  adjacencylist_rev_.reset(
-      new DoubleBucketQueue<BDEdgeLabel>(mincost, range, bucketsize, edgelabels_rev_));
+  adjacencylist_rev_.reuse(mincost, range, bucketsize, &edgelabels_rev_);
   edgestatus_.clear();
 
   // Get hierarchy limits from the costing. Get a copy since we increment
@@ -91,6 +92,7 @@ bool TimeDepReverse::ExpandReverse(GraphReader& graphreader,
     const DirectedEdge* opp_edge;
     const GraphId opp_edge_id = graphreader.GetOpposingEdgeId(pred.edgeid(), opp_edge, tile);
     EdgeStatusInfo* opp_status = edgestatus_.GetPtr(opp_edge_id, tile);
+    pred.set_deadend(true);
     return ExpandReverseInner(graphreader, pred, opp_pred_edge, nodeinfo, pred_idx,
                               {opp_edge, opp_edge_id, opp_status}, tile, offset_time, destination,
                               best_path);
@@ -123,7 +125,8 @@ bool TimeDepReverse::ExpandReverse(GraphReader& graphreader,
       // if this is a downward transition (ups are always allowed) AND we are no longer allowed OR
       // we cant get the tile at that level (local extracts could have this problem) THEN bail
       graph_tile_ptr trans_tile = nullptr;
-      if ((!trans->up() && hierarchy_limits_[trans->endnode().level()].StopExpanding()) ||
+      if ((!trans->up() &&
+           hierarchy_limits_[trans->endnode().level()].StopExpanding(pred.distance())) ||
           !(trans_tile = graphreader.GetGraphTile(trans->endnode()))) {
         continue;
       }
@@ -199,7 +202,7 @@ inline bool TimeDepReverse::ExpandReverseInner(GraphReader& graphreader,
 
   // Skip this edge if no access is allowed (based on costing method)
   // or if a complex restriction prevents transition onto this edge.
-  int restriction_idx = -1;
+  uint8_t restriction_idx = -1;
   if (!costing_->AllowedReverse(meta.edge, pred, opp_edge, t2, oppedge, time_info.local_time,
                                 nodeinfo->timezone(), restriction_idx) ||
       costing_->Restricted(meta.edge, pred, edgelabels_rev_, tile, meta.edge_id, false, &edgestatus_,
@@ -210,8 +213,10 @@ inline bool TimeDepReverse::ExpandReverseInner(GraphReader& graphreader,
   // Get cost. Use opposing edge for EdgeCost. Separate the transition seconds so we
   // can properly recover elapsed time on the reverse path.
   auto transition_cost =
-      costing_->TransitionCostReverse(meta.edge->localedgeidx(), nodeinfo, opp_edge, opp_pred_edge);
-  auto edge_cost = costing_->EdgeCost(opp_edge, t2, time_info.second_of_week);
+      costing_->TransitionCostReverse(meta.edge->localedgeidx(), nodeinfo, opp_edge, opp_pred_edge,
+                                      pred.has_measured_speed(), pred.internal_turn());
+  uint8_t flow_sources;
+  auto edge_cost = costing_->EdgeCost(opp_edge, t2, time_info.second_of_week, flow_sources);
   Cost newcost = pred.cost() + edge_cost;
   newcost.cost += transition_cost.cost;
 
@@ -249,7 +254,7 @@ inline bool TimeDepReverse::ExpandReverseInner(GraphReader& graphreader,
     BDEdgeLabel& lab = edgelabels_rev_[meta.edge_status->index()];
     if (newcost.cost < lab.cost().cost) {
       float newsortcost = lab.sortcost() - (lab.cost().cost - newcost.cost);
-      adjacencylist_rev_->decrease(meta.edge_status->index(), newsortcost);
+      adjacencylist_rev_.decrease(meta.edge_status->index(), newsortcost);
       lab.Update(pred_idx, newcost, newsortcost, transition_cost, restriction_idx);
     }
     return true;
@@ -273,8 +278,13 @@ inline bool TimeDepReverse::ExpandReverseInner(GraphReader& graphreader,
   uint32_t idx = edgelabels_rev_.size();
   edgelabels_rev_.emplace_back(pred_idx, meta.edge_id, oppedge, meta.edge, newcost, sortcost, dist,
                                mode_, transition_cost,
-                               (pred.not_thru_pruning() || !meta.edge->not_thru()), restriction_idx);
-  adjacencylist_rev_->add(idx);
+                               (pred.not_thru_pruning() || !meta.edge->not_thru()),
+                               (pred.closure_pruning() || !(costing_->IsClosed(meta.edge, tile))),
+                               static_cast<bool>(flow_sources & kDefaultFlowMask),
+                               costing_->TurnType(meta.edge->localedgeidx(), nodeinfo, opp_edge,
+                                                  opp_pred_edge),
+                               restriction_idx);
+  adjacencylist_rev_.add(idx);
   *meta.edge_status = {EdgeSet::kTemporary, idx};
 
   return true;
@@ -344,7 +354,7 @@ TimeDepReverse::GetBestPath(valhalla::Location& origin,
 
     // Get next element from adjacency list. Check that it is valid. An
     // invalid label indicates there are no edges that can be expanded.
-    uint32_t predindex = adjacencylist_rev_->pop();
+    uint32_t predindex = adjacencylist_rev_.pop();
 
     if (predindex == kInvalidLabel) {
       LOG_ERROR("Route failed after iterations = " + std::to_string(edgelabels_rev_.size()));
@@ -457,7 +467,9 @@ void TimeDepReverse::SetOrigin(GraphReader& graphreader,
     const DirectedEdge* opp_dir_edge = graphreader.GetOpposingEdge(edgeid);
 
     // Get cost
-    Cost cost = costing_->EdgeCost(directededge, tile, seconds_of_week) * edge.percent_along();
+    uint8_t flow_sources;
+    Cost cost =
+        costing_->EdgeCost(directededge, tile, seconds_of_week, flow_sources) * edge.percent_along();
     float dist = astarheuristic_.GetDistance(tile->get_node_ll(opp_dir_edge->endnode()));
 
     // We need to penalize this location based on its score (distance in meters from input)
@@ -481,7 +493,7 @@ void TimeDepReverse::SetOrigin(GraphReader& graphreader,
             // remaining must be zero.
             GraphId id(dest_path_edge.graph_id());
             const DirectedEdge* dest_edge = tile->directededge(id);
-            Cost remainder_cost = costing_->EdgeCost(dest_edge, tile, seconds_of_week) *
+            Cost remainder_cost = costing_->EdgeCost(dest_edge, tile, seconds_of_week, flow_sources) *
                                   (dest_path_edge.percent_along());
             // Remove the cost of the final "unused" part of the destination edge
             cost -= remainder_cost;
@@ -508,8 +520,10 @@ void TimeDepReverse::SetOrigin(GraphReader& graphreader,
     // DO NOT SET EdgeStatus - it messes up trivial paths with oneways
     uint32_t idx = edgelabels_rev_.size();
     edgelabels_rev_.emplace_back(kInvalidLabel, opp_edge_id, edgeid, opp_dir_edge, cost, sortcost,
-                                 dist, mode_, c, false, -1);
-    adjacencylist_rev_->add(idx);
+                                 dist, mode_, c, false, !(costing_->IsClosed(directededge, tile)),
+                                 static_cast<bool>(flow_sources & kDefaultFlowMask),
+                                 sif::InternalTurn::kNoTurn, -1);
+    adjacencylist_rev_.add(idx);
 
     // Set the initial not_thru flag to false. There is an issue with not_thru
     // flags on small loops. Set this to false here to override this for now.
