@@ -296,6 +296,7 @@ enum class Use : uint8_t {
   kPath = 27,
   kPedestrian = 28,
   kBridleway = 29,
+  kPedestrianCrossing = 32, // cross walks
 
   // Rest/Service Areas
   kRestArea = 30,
@@ -549,7 +550,8 @@ enum class AccessType : uint8_t {
   kMaxWeight = 4,
   kMaxAxleLoad = 5,
   kTimedAllowed = 6,
-  kTimedDenied = 7
+  kTimedDenied = 7,
+  kDestinationAllowed = 8,
 };
 
 // Minimum meters offset from start/end of shape for finding heading

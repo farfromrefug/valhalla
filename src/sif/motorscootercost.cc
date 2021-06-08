@@ -197,6 +197,7 @@ public:
    * based on other parameters such as conditional restrictions and
    * conditional access that can depend on time and travel mode.
    * @param  edge           Pointer to a directed edge.
+   * @param  is_dest        Is a directed edge the destination?
    * @param  pred           Predecessor edge information.
    * @param  tile           Current tile.
    * @param  edgeid         GraphId of the directed edge.
@@ -206,6 +207,7 @@ public:
    * @return Returns true if access is allowed, false if not.
    */
   virtual bool Allowed(const baldr::DirectedEdge* edge,
+                       const bool is_dest,
                        const EdgeLabel& pred,
                        const graph_tile_ptr& tile,
                        const baldr::GraphId& edgeid,
@@ -385,6 +387,7 @@ MotorScooterCost::MotorScooterCost(const CostingOptions& costing_options)
 
 // Check if access is allowed on the specified edge.
 bool MotorScooterCost::Allowed(const baldr::DirectedEdge* edge,
+                               const bool is_dest,
                                const EdgeLabel& pred,
                                const graph_tile_ptr& tile,
                                const baldr::GraphId& edgeid,
@@ -401,8 +404,8 @@ bool MotorScooterCost::Allowed(const baldr::DirectedEdge* edge,
     return false;
   }
 
-  return DynamicCost::EvaluateRestrictions(access_mask_, edge, tile, edgeid, current_time, tz_index,
-                                           restriction_idx);
+  return DynamicCost::EvaluateRestrictions(access_mask_, edge, is_dest, tile, edgeid, current_time,
+                                           tz_index, restriction_idx);
 }
 
 // Checks if access is allowed for an edge on the reverse path (from
@@ -425,7 +428,7 @@ bool MotorScooterCost::AllowedReverse(const baldr::DirectedEdge* edge,
     return false;
   }
 
-  return DynamicCost::EvaluateRestrictions(access_mask_, edge, tile, opp_edgeid, current_time,
+  return DynamicCost::EvaluateRestrictions(access_mask_, edge, false, tile, opp_edgeid, current_time,
                                            tz_index, restriction_idx);
 }
 
@@ -467,6 +470,10 @@ Cost MotorScooterCost::EdgeCost(const baldr::DirectedEdge* edge,
     factor *= living_street_factor_;
   } else if (edge->use() == Use::kServiceRoad) {
     factor *= service_factor_;
+  }
+  if (IsClosed(edge, tile)) {
+    // Add a penalty for traversing a closed edge
+    factor *= closure_factor_;
   }
 
   return {sec * factor, sec};
@@ -711,6 +718,7 @@ void ParseMotorScooterCostOptions(const rapidjson::Document& doc,
     pbf_costing_options->set_flow_mask(kDefaultFlowMask);
     pbf_costing_options->set_service_penalty(kDefaultServicePenalty);
     pbf_costing_options->set_service_factor(kDefaultServiceFactor);
+    pbf_costing_options->set_closure_factor(kDefaultClosureFactor);
   }
 }
 

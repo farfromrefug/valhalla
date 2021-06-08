@@ -24,6 +24,8 @@
 #include <rapidjson/document.h>
 #include <unordered_map>
 
+using namespace valhalla::midgard;
+
 namespace valhalla {
 namespace sif {
 
@@ -47,16 +49,25 @@ constexpr float kTCUnfavorableUturn = 600.f;
 constexpr midgard::ranged_default_t<uint32_t> kVehicleSpeedRange{10, baldr::kMaxAssumedSpeed,
                                                                  baldr::kMaxSpeedKph};
 
+// Default penalty factor for avoiding closures (increases the cost of an edge as if its being
+// traversed at kMinSpeedKph)
+constexpr float kDefaultClosureFactor = 9.0f;
+// Default range of closure factor to use for closed edges. Min is set to 1.0, which means do not
+// penalize closed edges. The max is set to 10.0 in order to limit how much expansion occurs from the
+// non-closure end
+constexpr ranged_default_t<float> kClosureFactorRange{1.0f, kDefaultClosureFactor, 10.0f};
+
 /**
  * Mask values used in the allowed function by loki::reach to control how conservative
  * the decision should be. By default allowed methods will not disallow start/end/simple
- * restrictions and closures are determined by the costing configuration
+ * restrictions/shortcuts and closures are determined by the costing configuration
  */
 constexpr uint16_t kDisallowNone = 0x0;
 constexpr uint16_t kDisallowStartRestriction = 0x1;
 constexpr uint16_t kDisallowEndRestriction = 0x2;
 constexpr uint16_t kDisallowSimpleRestriction = 0x4;
 constexpr uint16_t kDisallowClosure = 0x8;
+constexpr uint16_t kDisallowShortcut = 0x10;
 
 /**
  * Base class for dynamic edge costing. This class defines the interface for
@@ -152,6 +163,7 @@ public:
    * based on other parameters such as conditional restrictions and
    * conditional access that can depend on time and travel mode.
    * @param  edge           Pointer to a directed edge.
+   * @param  is_dest        Is a directed edge the destination?
    * @param  pred           Predecessor edge information.
    * @param  tile           Current tile.
    * @param  edgeid         GraphId of the directed edge.
@@ -161,6 +173,7 @@ public:
    * @return Returns true if access is allowed, false if not.
    */
   virtual bool Allowed(const baldr::DirectedEdge* edge,
+                       const bool is_dest,
                        const EdgeLabel& pred,
                        const graph_tile_ptr& tile,
                        const baldr::GraphId& edgeid,
@@ -227,8 +240,9 @@ public:
     bool assumed_restricted =
         ((disallow_mask & kDisallowStartRestriction) && edge->start_restriction()) ||
         ((disallow_mask & kDisallowEndRestriction) && edge->end_restriction()) ||
-        ((disallow_mask & kDisallowSimpleRestriction) && edge->restrictions());
-    return !edge->is_shortcut() && accessible && !assumed_restricted;
+        ((disallow_mask & kDisallowSimpleRestriction) && edge->restrictions()) ||
+        ((disallow_mask & kDisallowShortcut) && edge->is_shortcut());
+    return accessible && !assumed_restricted;
   }
 
   /**
@@ -490,6 +504,7 @@ public:
 
   inline bool EvaluateRestrictions(uint32_t access_mode,
                                    const baldr::DirectedEdge* edge,
+                                   const bool is_dest,
                                    const graph_tile_ptr& tile,
                                    const baldr::GraphId& edgeid,
                                    const uint64_t current_time,
@@ -508,7 +523,8 @@ public:
       // Compare the time to the time-based restrictions
       baldr::AccessType access_type = restriction.type();
       if (access_type == baldr::AccessType::kTimedAllowed ||
-          access_type == baldr::AccessType::kTimedDenied) {
+          access_type == baldr::AccessType::kTimedDenied ||
+          access_type == baldr::AccessType::kDestinationAllowed) {
         // TODO: if(i > baldr::kInvalidRestriction) LOG_ERROR("restriction index overflow");
         restriction_idx = static_cast<uint8_t>(i);
 
@@ -528,6 +544,8 @@ public:
             // We are in range at the time we are allowed at this edge
             if (access_type == baldr::AccessType::kTimedAllowed)
               return true;
+            else if (access_type == baldr::AccessType::kDestinationAllowed)
+              return allow_conditional_destination_ || is_dest;
             else
               return false;
           }
@@ -608,7 +626,7 @@ public:
         seconds += kTCUnfavorableUturn;
       // Did we make a pencil point uturn?
       else if (edge->turntype(idx) == baldr::Turn::Type::kSharpLeft && edge->edge_to_right(idx) &&
-               !edge->edge_to_left(idx) && edge->name_consistency(idx))
+               !edge->edge_to_left(idx) && edge->named() && edge->name_consistency(idx))
         seconds *= kTCUnfavorablePencilPointUturn;
     } else {
       // Did we make a uturn on a short, internal edge or did we make a uturn at a node.
@@ -617,7 +635,7 @@ public:
         seconds += kTCUnfavorableUturn;
       // Did we make a pencil point uturn?
       else if (edge->turntype(idx) == baldr::Turn::Type::kSharpRight && !edge->edge_to_right(idx) &&
-               edge->edge_to_left(idx) && edge->name_consistency(idx))
+               edge->edge_to_left(idx) && edge->named() && edge->name_consistency(idx))
         seconds *= kTCUnfavorablePencilPointUturn;
     }
   }
@@ -668,6 +686,12 @@ public:
    * @param  allow  Flag indicating whether transit connections are allowed.
    */
   virtual void SetAllowTransitConnections(const bool allow);
+
+  /**
+   * Sets the flag indicating whether edges with valid restriction conditional=destination are
+   * allowed.
+   */
+  void set_allow_conditional_destination(const bool allow);
 
   /**
    * Set the current travel mode.
@@ -818,6 +842,8 @@ protected:
   // and bicycle generally allow access (with small penalties).
   bool allow_destination_only_;
 
+  bool allow_conditional_destination_;
+
   // Travel mode
   TravelMode travel_mode_;
 
@@ -835,6 +861,7 @@ protected:
   float track_factor_;         // Avoid tracks factor.
   float living_street_factor_; // Avoid living streets factor.
   float service_factor_;       // Avoid service roads factor.
+  float closure_factor_;       // Avoid closed edges factor.
 
   // Transition costs
   sif::Cost country_crossing_cost_;
@@ -941,6 +968,8 @@ protected:
     // Penalty and factor to use service roads
     service_penalty_ = costing_options.service_penalty();
     service_factor_ = costing_options.service_factor();
+    // Closure factor to use for closed edges
+    closure_factor_ = costing_options.closure_factor();
 
     // Set the speed mask to determine which speed data types are allowed
     flow_mask_ = costing_options.flow_mask();
@@ -974,7 +1003,7 @@ protected:
     // Cases with both time and penalty: country crossing, ferry, rail_ferry, gate, toll booth
     sif::Cost c;
     c += country_crossing_cost_ * (node->type() == baldr::NodeType::kBorderControl);
-    c += gate_cost_ * (node->type() == baldr::NodeType::kGate);
+    c += gate_cost_ * (node->type() == baldr::NodeType::kGate) * (!node->tagged_access());
     c += bike_share_cost_ * (node->type() == baldr::NodeType::kBikeShare);
     c += toll_booth_cost_ *
          (node->type() == baldr::NodeType::kTollBooth || (edge->toll() && !pred->toll()));
