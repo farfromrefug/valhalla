@@ -1,6 +1,7 @@
 ## UNRELEASED
 * **Removed**
 * **Bug Fix**
+   * FIXED: `cycleway:both` was ignored when resolving `cycle_lane`, so roads with a lane on both sides read as having none
 * **Enhancement**
 
 ## Release Date: 2026-07-24 Valhalla 3.8.3

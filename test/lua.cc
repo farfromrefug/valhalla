@@ -6,6 +6,8 @@
 #include <osmium/builder/osm_object_builder.hpp>
 
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace valhalla;
 
@@ -122,6 +124,41 @@ TEST(Lua, NumberDoublePeriod) {
 
   // ... but that the results aren't completely empty
   ASSERT_TRUE(results.size() > 0);
+}
+
+namespace {
+std::pair<std::string, std::string>
+cycle_lanes(const std::vector<std::pair<std::string, std::string>>& extra) {
+  mjolnir::LuaTagTransform lua(std::string(lua_graph_lua, lua_graph_lua + lua_graph_lua_len));
+  TagsBuilder tags;
+  tags.insert({"highway", "primary"});
+  for (const auto& tag : extra) {
+    tags.insert(tag);
+  }
+  auto results = lua.Transform(mjolnir::OSMType::kWay, 1, tags.get());
+  return {results["cycle_lane_right"], results["cycle_lane_left"]};
+}
+} // namespace
+
+TEST(Lua, CyclewayBoth) {
+  using lanes = std::pair<std::string, std::string>;
+  // right/left are CycleLane values: 0 none, 1 shared, 2 dedicated, 3 separated
+  EXPECT_EQ(cycle_lanes({{"cycleway:both", "lane"}}), lanes("2", "2"));
+  EXPECT_EQ(cycle_lanes({{"cycleway:both", "track"}}), lanes("3", "3"));
+  EXPECT_EQ(cycle_lanes({{"cycleway:both", "shared_lane"}}), lanes("1", "1"));
+  // a tag on one side wins over cycleway:both on that side only
+  EXPECT_EQ(cycle_lanes({{"cycleway:both", "lane"}, {"cycleway:right", "track"}}),
+            lanes("3", "2"));
+  // cycleway keeps priority, as before
+  EXPECT_EQ(cycle_lanes({{"cycleway", "track"}, {"cycleway:both", "lane"}}), lanes("3", "3"));
+}
+
+TEST(Lua, CyclewaySeparateIsNoLane) {
+  // the infrastructure is mapped as its own way, so there is no lane on this road
+  using lanes = std::pair<std::string, std::string>;
+  EXPECT_EQ(cycle_lanes({{"cycleway:both", "separate"}}), lanes("0", "0"));
+  EXPECT_EQ(cycle_lanes({{"cycleway:right", "separate"}}), lanes("0", "0"));
+  EXPECT_EQ(cycle_lanes({{"bicycle", "use_sidepath"}}), lanes("0", "0"));
 }
 
 TEST(Lua, TestForwardBackward) {
