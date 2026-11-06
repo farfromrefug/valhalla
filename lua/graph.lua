@@ -1694,8 +1694,10 @@ function filter_tags_generic(kv)
     cycle_lane_left = cycle_lane_right
 
     if cycle_lane_right == 0 then
-      cycle_lane_right = shared[kv["cycleway:right"]] or separated[kv["cycleway:right"]] or dedicated[kv["cycleway:right"]] or buffer[kv["cycleway:right:buffer"]] or 0
-      cycle_lane_left = shared[kv["cycleway:left"]] or separated[kv["cycleway:left"]] or dedicated[kv["cycleway:left"]] or buffer[kv["cycleway:left:buffer"]] or 0
+      --cycleway:both applies to a side only when that side has no tag of its own
+      local cycle_lane_both = shared[kv["cycleway:both"]] or separated[kv["cycleway:both"]] or dedicated[kv["cycleway:both"]] or 0
+      cycle_lane_right = shared[kv["cycleway:right"]] or separated[kv["cycleway:right"]] or dedicated[kv["cycleway:right"]] or buffer[kv["cycleway:right:buffer"]] or cycle_lane_both
+      cycle_lane_left = shared[kv["cycleway:left"]] or separated[kv["cycleway:left"]] or dedicated[kv["cycleway:left"]] or buffer[kv["cycleway:left:buffer"]] or cycle_lane_both
     end
 
     --If we have the oneway:bicycle=no tag and there are not "opposite_lane/opposite_track" tags then there are certain situations where
