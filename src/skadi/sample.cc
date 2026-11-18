@@ -15,7 +15,9 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <list>
 #include <optional>
@@ -56,7 +58,7 @@ uint64_t file_size(const std::string& file_name) {
 namespace valhalla {
 namespace skadi {
 
-enum class format_t { UNKNOWN = 0, RAW = 1, GZIP = 2, LZ4 = 3 };
+enum class format_t { UNKNOWN = 0, RAW = 1, GZIP = 2, LZ4 = 3, REMOTE = 4, MISSING = 5 };
 
 class cache_item_t {
 private:
@@ -105,7 +107,11 @@ public:
     return rv;
   }
 
-  bool unpack(const char* unpacked) {
+  void set_remote() {
+    format = format_t::REMOTE;
+  }
+
+  bool unpack(const char* unpacked, const std::function<bool(char*)>& load) {
     this->unpacked = unpacked;
 
     if (format == format_t::GZIP) {
@@ -156,6 +162,11 @@ public:
       format = format_t::UNKNOWN;
       return false;
 #endif
+    } else if (format == format_t::REMOTE) {
+      if (!load || !load(const_cast<char*>(this->unpacked))) {
+        format = format_t::MISSING;
+        return false;
+      }
     } else {
       LOG_WARN("Corrupt elevation data of unknown type");
       format = format_t::UNKNOWN;
@@ -298,6 +309,8 @@ struct cache_t {
   std::recursive_mutex mutex;
   // Elevation tile path
   std::string data_source;
+  // Fills one tile in memory when there is no file for it; set only when tiles are not stored
+  std::function<bool(uint16_t, char*)> remote_load;
 
   void increment_usages(uint16_t index) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
@@ -336,7 +349,8 @@ tile_data cache_t::source(uint16_t index) {
 
   // if we don't have anything maybe it's lazy loaded
   auto& item = cache[index];
-  if (item.get_data() == nullptr) {
+  if (item.get_data() == nullptr && item.get_format() != format_t::REMOTE &&
+      item.get_format() != format_t::MISSING) {
     mutex.lock();
     if (item.get_data() == nullptr) {
       auto f = data_source + get_hgt_file_name(index);
@@ -345,8 +359,15 @@ tile_data cache_t::source(uint16_t index) {
     mutex.unlock();
   }
 
+  if (item.get_format() == format_t::UNKNOWN && remote_load) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    if (item.get_format() == format_t::UNKNOWN) {
+      item.set_remote();
+    }
+  }
+
   // it wasn't in cache and when we tried to load it the file was of unknown type
-  if (item.get_format() == format_t::UNKNOWN) {
+  if (item.get_format() == format_t::UNKNOWN || item.get_format() == format_t::MISSING) {
     return {};
   }
 
@@ -391,7 +412,8 @@ tile_data cache_t::source(uint16_t index) {
   auto rv = tile_data(this, index, true, (const int16_t*)unpacked);
   mutex.unlock();
 
-  if (!item.unpack(unpacked)) {
+  auto load = [this, index](char* dest) { return remote_load && remote_load(index, dest); };
+  if (!item.unpack(unpacked, load)) {
     rv = tile_data();
   }
 
@@ -439,6 +461,22 @@ sample::sample(const boost::property_tree::ptree& pt)
 
   // this line used only for testing, for more details check elevation_builder.cc
   remote_path_ = pt.get<std::string>("additional_data.elevation_dir", "");
+
+  // keep remote tiles in memory only, instead of writing each one under the elevation directory
+  if (!url_.empty() && !pt.get<bool>("additional_data.elevation_url_store", true)) {
+    cache_->remote_load = [this](uint16_t index, char* dest) {
+      auto uri =
+          baldr::make_single_point_url(url_, get_hgt_file_name(index).substr(1), remote_path_);
+      auto result = remote_loader_->get(uri);
+      if (result.status_ != baldr::tile_getter_t::status_code_t::SUCCESS ||
+          result.bytes_.size() != HGT_BYTES) {
+        LOG_WARN("Fail to load data from remote server address: " + uri);
+        return false;
+      }
+      std::memcpy(dest, result.bytes_.data(), HGT_BYTES);
+      return true;
+    };
+  }
 }
 
 sample::sample(const std::string& data_source) {
@@ -518,7 +556,7 @@ bool sample::store(const std::string& elev, const std::vector<char>& raw_data) {
 }
 
 bool sample::fetch(uint16_t index) {
-  if (url_.empty() || !remote_loader_)
+  if (url_.empty() || !remote_loader_ || cache_->remote_load)
     return false;
 
   auto elev = get_hgt_file_name(index);

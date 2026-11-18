@@ -2,6 +2,7 @@
 #include "baldr/graphconstants.h"
 #include "baldr/graphid.h"
 #include "baldr/graphreader.h"
+#include "baldr/tilehierarchy.h"
 #include "midgard/elevation_encoding.h"
 #include "midgard/logging.h"
 #include "midgard/pointll.h"
@@ -14,6 +15,8 @@
 
 #include <boost/property_tree/ptree.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <random>
 #include <thread>
@@ -340,6 +343,16 @@ void ElevationBuilder::Build(const boost::property_tree::ptree& pt,
 
   if (tile_ids.empty())
     tile_ids = get_tile_ids(pt);
+
+  // tiles fetched from a url are kept in a small cache, so work through them one degree at a time
+  if (!pt.get<std::string>("additional_data.elevation_url", "").empty()) {
+    auto cell = [](const GraphId& id) {
+      auto base = TileHierarchy::get_tiling(id.level()).Base(id.tileid());
+      return std::make_pair(std::floor(base.lat()), std::floor(base.lng()));
+    };
+    std::stable_sort(tile_ids.begin(), tile_ids.end(),
+                     [&cell](const GraphId& a, const GraphId& b) { return cell(a) < cell(b); });
+  }
 
   std::vector<std::shared_ptr<std::thread>> threads(nthreads);
 
